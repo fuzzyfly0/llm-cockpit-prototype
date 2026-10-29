@@ -1,0 +1,75 @@
+package core
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
+
+// streamEvent is one line of `claude --output-format stream-json`; transcript
+// lines in ~/.claude/projects share the same shape for user/assistant entries.
+type streamEvent struct {
+	Type      string          `json:"type"`
+	Subtype   string          `json:"subtype"`
+	SessionID string          `json:"session_id"`
+	UUID      string          `json:"uuid"`
+	Message   json.RawMessage `json:"message"`
+	TotalCost float64         `json:"total_cost_usd"`
+	IsError   bool            `json:"is_error"`
+	Result    string          `json:"result"`
+}
+
+type contentBlock struct {
+	Type  string          `json:"type"`
+	Text  string          `json:"text"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
+}
+
+// messagesFrom converts a user/assistant event into displayable messages.
+func messagesFrom(ev streamEvent) []Message {
+	var m struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(ev.Message, &m) != nil || len(m.Content) == 0 {
+		return nil
+	}
+	var text string
+	if json.Unmarshal(m.Content, &text) == nil {
+		if ev.Type == "user" && !strings.HasPrefix(strings.TrimSpace(text), "<") {
+			return []Message{{UUID: ev.UUID, Kind: KindUser, Text: text}}
+		}
+		return nil
+	}
+	var blocks []contentBlock
+	if json.Unmarshal(m.Content, &blocks) != nil {
+		return nil
+	}
+	var out []Message
+	for _, b := range blocks {
+		switch {
+		case b.Type == "text" && ev.Type == "assistant":
+			if strings.TrimSpace(b.Text) != "" {
+				out = append(out, Message{UUID: ev.UUID, Kind: KindAssistant, Text: b.Text})
+			}
+		case b.Type == "text" && ev.Type == "user":
+			if t := strings.TrimSpace(b.Text); t != "" && !strings.HasPrefix(t, "<") {
+				out = append(out, Message{UUID: ev.UUID, Kind: KindUser, Text: b.Text})
+			}
+		case b.Type == "tool_use":
+			out = append(out, Message{UUID: ev.UUID, Kind: KindTool, Text: toolSummary(b)})
+		}
+	}
+	return out
+}
+
+func toolSummary(b contentBlock) string {
+	var in map[string]any
+	_ = json.Unmarshal(b.Input, &in)
+	for _, key := range []string{"file_path", "command", "pattern", "path", "url", "description"} {
+		if v, ok := in[key].(string); ok && v != "" {
+			return fmt.Sprintf("%s %s", b.Name, excerpt(v, 80))
+		}
+	}
+	return b.Name
+}
