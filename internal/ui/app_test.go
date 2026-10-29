@@ -122,6 +122,35 @@ func TestMouse(t *testing.T) {
 	}
 }
 
+// Regression: typing a message that starts with "n" opened the new-session
+// dialog ("Ordner: …") because the session list had focus.
+func TestTypingGoesToMessageField(t *testing.T) {
+	mgr, _ := core.NewManagerAt("")
+	if _, err := mgr.Create("tippen", t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	mgr.StopAll()
+	a := New(mgr)
+	send(t, a, tea.WindowSizeMsg{Width: 120, Height: 30})
+	if a.focus != focusInput {
+		t.Fatalf("start focus=%d, want message field", a.focus)
+	}
+	send(t, a, keys("nimm die datei"))
+	if a.focus != focusInput || a.input.Value() != "nimm die datei" || a.input.Prompt != "› " {
+		t.Fatalf("focus=%d value=%q prompt=%q", a.focus, a.input.Value(), a.input.Prompt)
+	}
+	// After esc, "n" is the shortcut again and the dialog is clearly labelled.
+	send(t, a, special(tea.KeyEsc))
+	send(t, a, keys("n"))
+	if a.focus != focusNewDir || !strings.HasPrefix(a.input.Prompt, "Neue Session") {
+		t.Fatalf("focus=%d prompt=%q", a.focus, a.input.Prompt)
+	}
+	send(t, a, special(tea.KeyEsc))
+	if a.input.Prompt != "› " {
+		t.Fatalf("prompt after esc: %q", a.input.Prompt)
+	}
+}
+
 func TestButtonBarWrapsOnNarrowScreens(t *testing.T) {
 	mgr, _ := core.NewManagerAt("")
 	a := New(mgr)
@@ -238,6 +267,7 @@ func TestModelPickerAndUsage(t *testing.T) {
 	defer mgr.StopAll()
 	a := New(mgr)
 	send(t, a, tea.WindowSizeMsg{Width: 140, Height: 40})
+	send(t, a, special(tea.KeyEsc)) // leave the message field for shortcuts
 	send(t, a, keys("M"))
 	if a.focus != focusPick || !strings.Contains(ansi.Strip(a.View()), "Haiku 5.5") {
 		t.Fatalf("picker not shown, focus=%d", a.focus)

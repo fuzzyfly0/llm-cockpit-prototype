@@ -132,7 +132,7 @@ type Model struct {
 func New(mgr *core.Manager) *Model {
 	in := textinput.New()
 	in.Prompt = "› "
-	in.Placeholder = "Nachricht an die Session (enter senden, esc zurück)"
+	in.Placeholder = "Nachricht an die Session (enter senden · esc für Tastenkürzel)"
 	ta := textarea.New()
 	ta.Placeholder = "Notizen zu dieser Session…"
 	ta.ShowLineNumbers = false
@@ -148,6 +148,12 @@ func New(mgr *core.Manager) *Model {
 		expanded: map[int]bool{},
 	}
 	a.refresh()
+	// Like Claude Code, typing goes straight into the message field;
+	// single-key shortcuts work after esc.
+	if len(a.sessions) > 0 {
+		a.focus = focusInput
+		a.input.Focus()
+	}
 	return a
 }
 
@@ -398,12 +404,19 @@ func (a *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		case inRight && a.focus == focusFiles:
 			v := &a.files
 			v.sel = max(min(v.sel+delta, len(v.rows)-1), 0)
-		case inLeft && (a.focus == focusList || a.focus == focusMessages):
+		case inLeft && (a.focus == focusList || a.focus == focusMessages || a.focus == focusInput):
+			// Switch sessions; a focused message field stays focused.
+			prev := a.focus
 			a.focus = focusList
+			key := "down"
 			if delta < 0 {
-				return a.handleNav("up")
+				key = "up"
 			}
-			return a.handleNav("down")
+			_, cmd := a.handleNav(key)
+			if prev == focusInput {
+				a.focus = focusInput
+			}
+			return a, cmd
 		case a.focus == focusOverlay:
 			a.overlay.SetYOffset(a.overlay.YOffset + delta)
 		default:
@@ -463,13 +476,16 @@ func (a *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	case inLeft && row >= 0:
 		idx := a.listStart + row/2
 		if row < a.listRows && idx < len(a.sessions) {
-			a.focus = focusList
+			// Selecting a session by mouse makes it ready for typing.
+			a.focus = focusInput
+			focusCmd := a.input.Focus()
 			if idx != a.sel {
 				a.sel = idx
 				a.refresh()
-				return a, a.gitCmd()
+				return a, tea.Batch(focusCmd, a.gitCmd())
 			}
 			a.renderMessages()
+			return a, focusCmd
 		}
 	case inRight && row >= 2:
 		line := a.vp.YOffset + row - 2
@@ -505,6 +521,14 @@ func (a *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "esc":
 			a.input.Blur()
 			a.focus = focusList
+		case "pgup":
+			a.vp.HalfPageUp()
+		case "pgdown":
+			a.vp.HalfPageDown()
+		case "tab":
+			a.input.Blur()
+			a.focus = focusList
+			return a.handleNav("tab")
 		case "enter":
 			text := strings.TrimSpace(a.input.Value())
 			if s, ok := a.selected(); ok && text != "" {
@@ -535,7 +559,7 @@ func (a *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				a.newDir = dir
 				a.focus = focusNewName
-				a.input.Prompt = "Name: "
+				a.input.Prompt = "Neue Session › Name: "
 				a.input.SetValue(filepath.Base(dir))
 				a.input.CursorEnd()
 				return a, nil
@@ -665,7 +689,7 @@ func (a *Model) handleNav(key string) (tea.Model, tea.Cmd) {
 	case "n":
 		wd, _ := os.Getwd()
 		a.focus = focusNewDir
-		a.input.Prompt = "Ordner: "
+		a.input.Prompt = "Neue Session › Ordner: "
 		a.input.SetValue(wd)
 		a.input.CursorEnd()
 		return a, a.input.Focus()
@@ -1095,7 +1119,7 @@ func expandHome(p string) string {
 var helpLine = map[focus]string{
 	focusList:     "↑↓ wählen · enter schreiben · tab Verlauf · n neu · x stop · p pin · P pins · o notizen · f diff · u pull · e explorer · c IDE · g github · ? hilfe · q beenden",
 	focusMessages: "↑↓ Eintrag wählen · enter ganz zeigen · p pin · v Details · c Datei in IDE · f Diff in IDE · tab zurück",
-	focusInput:    "enter senden · esc zurück",
+	focusInput:    "enter senden · pgup/pgdn Verlauf scrollen · tab Verlauf · esc Tastenkürzel (n neu, d Dateien, M Modell, …)",
 	focusNewDir:   "Ordner für die neue Session · enter weiter · esc abbrechen",
 	focusNewName:  "Name der Session · enter starten · esc abbrechen",
 	focusNotes:    "esc speichert die Notizen",
