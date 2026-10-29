@@ -421,6 +421,13 @@ func (a *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		line := a.vp.YOffset + row - 2
 		for i := len(a.offsets) - 1; i >= 0; i-- {
 			if a.offsets[i] <= line {
+				// A second click on a file tool line opens the file.
+				if a.focus == focusMessages && i == a.msgCursor {
+					if f, ok := a.cursorFile(); ok {
+						a.report(platform.OpenIDE(a.mgr.Config().IDE, a.cur.Dir, f), "In der IDE geöffnet: "+f)
+						break
+					}
+				}
 				a.focus = focusMessages
 				a.msgCursor = i
 				a.renderMessages()
@@ -670,6 +677,10 @@ func (a *Model) handleNav(key string) (tea.Model, tea.Cmd) {
 	case "e":
 		a.report(platform.OpenFolder(s.Dir), "Explorer geöffnet")
 	case "c":
+		if f, ok := a.cursorFile(); ok {
+			a.report(platform.OpenIDE(a.mgr.Config().IDE, s.Dir, f), "In der IDE geöffnet: "+f)
+			break
+		}
 		a.report(platform.OpenIDE(a.mgr.Config().IDE, s.Dir, s.Dir), "IDE gestartet")
 	case "d":
 		return a, a.openFiles()
@@ -682,6 +693,10 @@ func (a *Model) handleNav(key string) (tea.Model, tea.Cmd) {
 	case "f", "u":
 		if !a.git[s.Dir].IsRepo {
 			a.status = "kein git-Repository"
+			break
+		}
+		if f, ok := a.cursorFile(); ok && key == "f" {
+			a.report(platform.OpenIDEDiff(a.mgr.Config().IDE, s.Dir, f), "Diff in der IDE: "+f)
 			break
 		}
 		dir, pull := s.Dir, key == "u"
@@ -712,6 +727,22 @@ func (a *Model) report(err error, ok string) {
 	} else {
 		a.status = ok
 	}
+}
+
+// cursorFile is the absolute file of the tool call under the message cursor.
+func (a *Model) cursorFile() (string, bool) {
+	if a.focus != focusMessages || a.msgCursor < 0 || a.msgCursor >= len(a.cur.Messages) {
+		return "", false
+	}
+	m := a.cur.Messages[a.msgCursor]
+	if m.Kind != core.KindTool || m.File == "" {
+		return "", false
+	}
+	f := filepath.FromSlash(m.File)
+	if !filepath.IsAbs(f) {
+		f = filepath.Join(a.cur.Dir, f)
+	}
+	return f, true
 }
 
 // pinTarget is the message under the cursor, or the last assistant answer.
@@ -780,7 +811,11 @@ func (a *Model) renderMessages() {
 			}
 			block = marker + llmStyle.Render("Claude") + pin + "\n" + body.Render(text)
 		case core.KindTool:
-			block = marker + dim.Render(ansi.Truncate("⚙ "+m.Text, width-2, "…"))
+			text := "⚙ " + m.Text
+			if m.File != "" && a.focus == focusMessages && i == a.msgCursor {
+				text += "   [c] in IDE öffnen · [f] Diff in IDE"
+			}
+			block = marker + dim.Render(ansi.Truncate(text, width-2, "…"))
 		case core.KindResult:
 			block = marker + dim.Render(ansi.Truncate("  ↳ "+m.Text, width-2, "…"))
 		default:
@@ -934,7 +969,7 @@ func expandHome(p string) string {
 
 var helpLine = map[focus]string{
 	focusList:     "↑↓ wählen · enter schreiben · tab Verlauf · n neu · x stop · p pin · P pins · o notizen · f diff · u pull · e explorer · c IDE · g github · ? hilfe · q beenden",
-	focusMessages: "↑↓ Antwort wählen · p pin/unpin · pgup/pgdn scrollen · tab zurück zur Liste",
+	focusMessages: "↑↓ Eintrag wählen · p pin/unpin · c Datei in IDE · f Diff in IDE · pgup/pgdn scrollen · tab zurück zur Liste",
 	focusInput:    "enter senden · esc zurück",
 	focusNewDir:   "Ordner für die neue Session · enter weiter · esc abbrechen",
 	focusNewName:  "Name der Session · enter starten · esc abbrechen",
@@ -942,7 +977,7 @@ var helpLine = map[focus]string{
 	focusPins:     "↑↓ wählen · enter zur Stelle springen · x entfernen · esc zurück",
 	focusOverlay:  "↑↓/pgup/pgdn scrollen · esc schließen",
 	focusConfirm:  "y bestätigen · andere Taste abbrechen",
-	focusFiles:    "↑↓ wählen · enter/Klick öffnen · →← auf/zu · m nur Änderungen · f diff · c IDE · e explorer · r neu laden · esc zurück",
+	focusFiles:    "↑↓ wählen · enter/Klick öffnen · →← auf/zu · m nur Änderungen · f Diff in IDE · F Diff hier · c IDE · e explorer · esc zurück",
 }
 
 const helpText = `Sessions
@@ -956,7 +991,8 @@ const helpText = `Sessions
 
 Verlauf, Pins, Notizen
   tab        zwischen Liste und Verlauf wechseln
-  ↑/↓        im Verlauf: Antwort wählen
+  ↑/↓        im Verlauf: Antwort oder Tool-Zeile wählen
+  c / f      auf ⚙-Zeile mit Datei: in der IDE öffnen / Diff in der IDE
   p          Antwort pinnen / entpinnen (in der Liste: letzte Antwort)
   P          Pins anzeigen, enter springt zur Stelle
   o          Notizen bearbeiten (esc speichert)
@@ -967,7 +1003,8 @@ Dateien (d)
   enter      Ordner auf/zu bzw. Datei-Vorschau
   →/←        Ordner aufklappen / zuklappen
   m          nur geänderte Dateien zeigen (M A ? D, ✎ = von Claude bearbeitet)
-  f          diff dieser Datei
+  f          Diff dieser Datei im Vergleichsfenster der IDE (HEAD ↔ aktuell)
+  F          Diff dieser Datei als Text im Cockpit
   c          Datei in der IDE öffnen
   e          Ordner im Explorer öffnen
   r          neu laden
@@ -984,6 +1021,7 @@ Git & System
 Maus
   Klick auf Session      auswählen
   Klick auf Antwort      Antwort wählen (dann [Pin])
+  2. Klick auf ⚙-Zeile   Datei in der IDE öffnen
   Klick auf Eingabe      Nachricht schreiben
   Mausrad                Verlauf / Liste scrollen
   Buttons unten          wie die Tasten oben

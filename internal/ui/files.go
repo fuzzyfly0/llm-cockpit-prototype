@@ -304,6 +304,10 @@ func (a *Model) handleFilesKey(key string) (tea.Model, tea.Cmd) {
 		}
 	case "f":
 		if ok && !n.dir {
+			a.report(platform.OpenIDEDiff(a.mgr.Config().IDE, v.dir, a.absPath(n.path)), "Diff in der IDE: "+n.path)
+		}
+	case "F":
+		if ok && !n.dir {
 			dir, rel := v.dir, n.path
 			a.overlayBack = focusFiles
 			return a, func() tea.Msg {

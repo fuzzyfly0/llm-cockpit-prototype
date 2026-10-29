@@ -42,8 +42,19 @@ type Message struct {
 	Text string
 	// Partial marks an assistant text that is still being streamed.
 	Partial bool
-	// File is the path a modifying tool call worked on (KindTool only).
+	// Tool and File describe a tool call (KindTool only); File is set for
+	// tools that read or modify a file.
+	Tool string
 	File string
+}
+
+// Modifies reports whether the tool call changed File.
+func (m Message) Modifies() bool {
+	switch m.Tool {
+	case "Edit", "MultiEdit", "Write", "NotebookEdit":
+		return m.File != ""
+	}
+	return false
 }
 
 // TouchedFiles returns the files Claude modified in this session.
@@ -51,7 +62,7 @@ func (s *Session) TouchedFiles() []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, m := range s.Messages {
-		if m.File != "" && !seen[m.File] {
+		if m.Modifies() && !seen[m.File] {
 			seen[m.File] = true
 			out = append(out, m.File)
 		}

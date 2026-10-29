@@ -72,7 +72,7 @@ func messagesFrom(ev streamEvent) []Message {
 				out = append(out, Message{UUID: ev.UUID, Kind: KindUser, Text: b.Text})
 			}
 		case b.Type == "tool_use":
-			out = append(out, Message{UUID: ev.UUID, Kind: KindTool, Text: toolSummary(b), File: toolFile(b)})
+			out = append(out, Message{UUID: ev.UUID, Kind: KindTool, Text: toolSummary(b), Tool: b.Name, File: toolFile(b)})
 		case b.Type == "tool_result":
 			out = append(out, Message{UUID: ev.UUID, Kind: KindResult, Text: resultSummary(b)})
 		}
@@ -104,10 +104,10 @@ func resultSummary(b contentBlock) string {
 	return s
 }
 
-// toolFile returns the file a modifying tool (Edit, Write, …) worked on.
+// toolFile returns the file a file tool (Read, Edit, Write, …) worked on.
 func toolFile(b contentBlock) string {
 	switch b.Name {
-	case "Edit", "MultiEdit", "Write", "NotebookEdit":
+	case "Read", "Edit", "MultiEdit", "Write", "NotebookEdit":
 	default:
 		return ""
 	}

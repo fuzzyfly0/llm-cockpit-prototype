@@ -112,6 +112,33 @@ func TestMouse(t *testing.T) {
 	}
 }
 
+func TestCursorFile(t *testing.T) {
+	mgr, _ := core.NewManagerAt("")
+	a := New(mgr)
+	send(t, a, tea.WindowSizeMsg{Width: 100, Height: 20})
+	dir := t.TempDir()
+	a.cur = core.Session{Dir: dir, Messages: []core.Message{
+		{Kind: core.KindTool, Tool: "Edit", File: "src/main.go", Text: "Edit src/main.go"},
+		{Kind: core.KindTool, Tool: "Bash", Text: "Bash ls"},
+	}}
+	if _, ok := a.cursorFile(); ok {
+		t.Fatal("cursorFile outside the message view")
+	}
+	a.focus, a.msgCursor = focusMessages, 0
+	f, ok := a.cursorFile()
+	if want := filepath.Join(dir, "src", "main.go"); !ok || f != want {
+		t.Fatalf("got %q %v, want %q", f, ok, want)
+	}
+	a.renderMessages()
+	if !strings.Contains(a.vp.View(), "[c] in IDE öffnen") {
+		t.Errorf("hint missing:\n%s", a.vp.View())
+	}
+	a.msgCursor = 1
+	if _, ok := a.cursorFile(); ok {
+		t.Fatal("Bash line has no file")
+	}
+}
+
 func TestStreamingRender(t *testing.T) {
 	mgr, _ := core.NewManagerAt("")
 	a := New(mgr)

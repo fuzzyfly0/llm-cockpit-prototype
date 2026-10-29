@@ -40,19 +40,72 @@ func OpenURL(u string) error {
 // OpenIDE runs the configured IDE launcher (e.g. "idea", "code") on target,
 // which may be the project folder or a single file inside dir.
 func OpenIDE(ide, dir, target string) error {
+	bin, err := resolveIDE(ide)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(bin, target)
+	cmd.Dir = dir
+	return cmd.Start()
+}
+
+func resolveIDE(ide string) (string, error) {
 	if ide == "" {
-		return errors.New("keine IDE konfiguriert")
+		return "", errors.New("keine IDE konfiguriert")
 	}
 	bin, err := exec.LookPath(ide)
 	if err != nil && (ide == "idea" || ide == "idea64") {
 		bin = FindIntelliJ()
 	}
 	if bin == "" {
-		return fmt.Errorf("IDE %q nicht gefunden (config.ide in state.json setzen)", ide)
+		return "", fmt.Errorf("IDE %q nicht gefunden (config.ide in state.json setzen)", ide)
 	}
-	cmd := exec.Command(bin, target)
+	return bin, nil
+}
+
+// OpenIDEDiff shows file (absolute, inside the git repo at dir) against its
+// HEAD version in the IDE's diff viewer.
+func OpenIDEDiff(ide, dir, file string) error {
+	bin, err := resolveIDE(ide)
+	if err != nil {
+		return err
+	}
+	left, err := headCopy(dir, file)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(bin, diffArgs(bin, left, file)...)
 	cmd.Dir = dir
 	return cmd.Start()
+}
+
+// headCopy writes the HEAD version of file to a temporary file and returns
+// its path. A file that is new since HEAD yields an empty file.
+func headCopy(dir, file string) (string, error) {
+	rel, err := filepath.Rel(dir, file)
+	if err != nil {
+		return "", err
+	}
+	// Raw stdout: the content must stay byte-identical (trailing newline).
+	head, err := exec.Command("git", "-C", dir, "show", "HEAD:./"+filepath.ToSlash(rel)).Output()
+	if err != nil {
+		head = nil
+	}
+	tmpDir, err := os.MkdirTemp("", "llm-cockpit-diff-")
+	if err != nil {
+		return "", err
+	}
+	left := filepath.Join(tmpDir, "HEAD - "+filepath.Base(file))
+	return left, os.WriteFile(left, head, 0o644)
+}
+
+// diffArgs builds the diff command line for JetBrains IDEs and VS Code.
+func diffArgs(bin, left, right string) []string {
+	name := strings.ToLower(filepath.Base(bin))
+	if strings.HasPrefix(name, "code") || strings.HasPrefix(name, "cursor") {
+		return []string{"--diff", left, right}
+	}
+	return []string{"diff", left, right}
 }
 
 // FindIntelliJ looks for an IntelliJ IDEA launcher in the usual install

@@ -79,6 +79,35 @@ func TestListFilesPlainDir(t *testing.T) {
 	}
 }
 
+func TestHeadCopy(t *testing.T) {
+	dir := newRepo(t)
+	read := func(rel string) string {
+		t.Helper()
+		left, err := headCopy(dir, filepath.Join(dir, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer os.RemoveAll(filepath.Dir(left))
+		data, _ := os.ReadFile(left)
+		return string(data)
+	}
+	if got := read("src/main.go"); got != "package main\n" {
+		t.Errorf("modified file: HEAD copy = %q", got)
+	}
+	if got := read("src/new.go"); got != "" {
+		t.Errorf("new file: HEAD copy = %q, want empty", got)
+	}
+}
+
+func TestDiffArgs(t *testing.T) {
+	if got := diffArgs(`C:\JetBrains\bin\idea64.exe`, "a", "b"); got[0] != "diff" {
+		t.Errorf("IntelliJ: %v", got)
+	}
+	if got := diffArgs("/usr/bin/code", "a", "b"); got[0] != "--diff" {
+		t.Errorf("VS Code: %v", got)
+	}
+}
+
 func TestReadPreview(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "f.txt")
 	_ = os.WriteFile(p, []byte("eins\n\tzwei"), 0o644)
