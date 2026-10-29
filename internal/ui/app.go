@@ -3,6 +3,7 @@ package ui
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,13 @@ import (
 
 // ChangedMsg is sent by the manager whenever session state changed.
 type ChangedMsg struct{}
+
+// debugLog records keys and mouse events when COCKPIT_DEBUG is set (see
+// SetDebugLog); nil otherwise.
+var debugLog *log.Logger
+
+// SetDebugLog enables the input log.
+func SetDebugLog(l *log.Logger) { debugLog = l }
 
 type gitMsg struct {
 	dir  string
@@ -339,8 +347,17 @@ func (a *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.previewPath = msg.path
 		return a, a.gitCmd()
 	case tea.KeyMsg:
+		if debugLog != nil {
+			debugLog.Printf("key %q type=%d alt=%v focus=%d", msg.String(), msg.Type, msg.Alt, a.focus)
+		}
 		return a.routeKey(msg)
 	case tea.MouseMsg:
+		ox, oy := platform.ConsoleWindowOrigin()
+		if debugLog != nil {
+			debugLog.Printf("mouse %s x=%d y=%d (console origin %d,%d) screen %dx%d", msg.String(), msg.X, msg.Y, ox, oy, a.w, a.h)
+		}
+		msg.X -= ox
+		msg.Y -= oy
 		return a.handleMouse(msg)
 	}
 	return a, nil
