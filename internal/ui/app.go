@@ -318,14 +318,7 @@ func (a *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.gitCmd()
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+o" {
-			// Like Claude Code: show everything (thinking, full outputs).
-			a.transcript = !a.transcript
-			if a.transcript {
-				a.status = "Alles ausgeklappt (ctrl+o klappt wieder zu)"
-			} else {
-				a.status = "Kompakte Ansicht"
-			}
-			a.renderMessages()
+			a.cycleView()
 			return a, nil
 		}
 		if msg.String() == "ctrl+c" {
@@ -341,20 +334,51 @@ func (a *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 type button struct{ label, key string }
 
-var buttons = []button{
-	{"+ Neu", "n"}, {"Schreiben", "enter"}, {"Start", "r"}, {"Stop", "x"},
-	{"Modell", "M"}, {"Effort", "E"},
-	{"Dateien", "d"}, {"Kopieren", "y"}, {"Pin", "p"}, {"Pins", "P"}, {"Notizen", "o"}, {"Diff", "f"}, {"Pull", "u"},
-	{"Explorer", "e"}, {"IDE", "c"}, {"GitHub", "g"}, {"Terminal", "t"},
-	{"Entfernen", "ctrl+d"}, {"?", "?"}, {"Beenden", "q"},
+// viewName names the current view level (see cycleView).
+func (a *Model) viewName() string {
+	switch {
+	case a.transcript:
+		return "alles"
+	case a.details:
+		return "normal"
+	}
+	return "kompakt"
+}
+
+// cycleView switches the history view: normal → alles → kompakt → normal.
+// "alles" shows every entry completely (like ctrl+o in Claude Code),
+// "kompakt" only headers and one result line.
+func (a *Model) cycleView() {
+	switch a.viewName() {
+	case "normal":
+		a.details, a.transcript = true, true
+	case "alles":
+		a.details, a.transcript = false, false
+	default:
+		a.details, a.transcript = true, false
+	}
+	a.status = "Ansicht: " + a.viewName() + " (ctrl+o schaltet weiter: normal → alles → kompakt)"
+	a.renderMessages()
+}
+
+// buttons lists the button bar; the view button shows the current level.
+func (a *Model) buttons() []button {
+	return []button{
+		{"+ Neu", "n"}, {"Schreiben", "enter"}, {"Start", "r"}, {"Stop", "x"},
+		{"Modell", "M"}, {"Effort", "E"}, {"Ansicht: " + a.viewName(), "ctrl+o"},
+		{"Dateien", "d"}, {"Kopieren", "y"}, {"Pin", "p"}, {"Pins", "P"}, {"Notizen", "o"}, {"Diff", "f"}, {"Pull", "u"},
+		{"Explorer", "e"}, {"IDE", "c"}, {"GitHub", "g"}, {"Terminal", "t"},
+		{"Entfernen", "ctrl+d"}, {"?", "?"}, {"Beenden", "q"},
+	}
 }
 
 // buttonRows wraps the button bar into as many rows as the width needs.
-func buttonRows(width int) [][]button {
+func (a *Model) buttonRows() [][]button {
+	width := a.w
 	var rows [][]button
 	var row []button
 	used := 0
-	for _, b := range buttons {
+	for _, b := range a.buttons() {
 		w := lipgloss.Width("[" + b.label + "]")
 		if len(row) > 0 && used+1+w > width {
 			rows = append(rows, row)
@@ -370,14 +394,14 @@ func buttonRows(width int) [][]button {
 }
 
 // barHeight is the number of rows below the input box.
-func (a *Model) barHeight() int { return len(buttonRows(a.w)) }
+func (a *Model) barHeight() int { return len(a.buttonRows()) }
 
 // bodyHeight is the inner height of the two main panels.
 func (a *Model) bodyHeight() int { return max(a.h-2-3-a.barHeight(), 1) }
 
 func (a *Model) renderButtons() string {
 	var lines []string
-	for _, row := range buttonRows(a.w) {
+	for _, row := range a.buttonRows() {
 		var parts []string
 		for _, b := range row {
 			parts = append(parts, lipgloss.NewStyle().Foreground(accent).Render("["+b.label+"]"))
@@ -389,7 +413,7 @@ func (a *Model) renderButtons() string {
 
 // buttonAt returns the key of the button at column x of bar row r.
 func (a *Model) buttonAt(x, r int) (string, bool) {
-	rows := buttonRows(a.w)
+	rows := a.buttonRows()
 	if r < 0 || r >= len(rows) {
 		return "", false
 	}
@@ -734,14 +758,8 @@ func (a *Model) handleNav(key string) (tea.Model, tea.Cmd) {
 		} else {
 			a.status = fmt.Sprintf("kopiert: %d Zeichen, %d Zeilen", len([]rune(text)), strings.Count(text, "\n")+1)
 		}
-	case "v":
-		a.details = !a.details
-		if a.details {
-			a.status = "Details an: Tool-Eingaben und mehrere Ergebniszeilen"
-		} else {
-			a.status = "Details aus: kompakte Ansicht"
-		}
-		a.renderMessages()
+	case "ctrl+o": // from the button bar
+		a.cycleView()
 	case "r":
 		if err := a.mgr.Start(s.ID); err != nil {
 			a.status = "Start fehlgeschlagen: " + err.Error()
@@ -1192,7 +1210,7 @@ func expandHome(p string) string {
 
 var helpLine = map[focus]string{
 	focusList:        "↑↓ wählen · enter schreiben · tab Verlauf · n neu · x stop · p pin · P pins · o notizen · f diff · u pull · e explorer · c IDE · g github · ? hilfe · q beenden",
-	focusMessages:    "↑↓ Eintrag wählen · enter ganz zeigen · y kopieren · p pin · v Details · c Datei in IDE · f Diff in IDE · tab zurück",
+	focusMessages:    "↑↓ Eintrag wählen · enter ganz zeigen · y kopieren · p pin · ctrl+o Ansicht · c Datei in IDE · f Diff in IDE · tab zurück",
 	focusInput:       "enter senden · pgup/pgdn Verlauf scrollen · tab Verlauf · esc Tastenkürzel (n neu, d Dateien, M Modell, …)",
 	focusNewDir:      "Ordner für die neue Session · enter weiter · esc abbrechen",
 	focusNewName:     "Name der Session · enter starten · esc abbrechen",
@@ -1227,8 +1245,10 @@ Verlauf
   tab        zwischen Liste und Verlauf wechseln
   ↑/↓        Eintrag wählen (Antwort, Nachricht, Tool, Ergebnis, …)
   enter      Eintrag ganz anzeigen / wieder kürzen (auch 2. Klick)
-  v          Details an/aus (Tool-Eingaben, mehrere Ergebniszeilen)
-  ctrl+o     alles ausklappen / zuklappen (wie in Claude Code)
+  ctrl+o     Ansicht wechseln (auch Button [Ansicht: …]):
+               normal  – Tool-Eingaben, ein paar Zeilen Ergebnis, Diffs
+               alles   – nichts gekürzt (wie ctrl+o in Claude Code)
+               kompakt – nur Überschriften und eine Ergebniszeile
   y          gewählten Eintrag vollständig kopieren (in der Liste: letzte Antwort)
   c / f      auf ⏺-Zeile mit Datei: in der IDE öffnen / Diff in der IDE
   p          gewählten Eintrag pinnen / entpinnen (in der Liste: letzte Antwort)

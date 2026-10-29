@@ -177,7 +177,7 @@ func TestButtonBarWrapsOnNarrowScreens(t *testing.T) {
 	if rows := strings.Split(out, "\n"); len(rows) != 30 {
 		t.Fatalf("view has %d rows, want 30", len(rows))
 	}
-	for _, b := range buttons {
+	for _, b := range a.buttons() {
 		if !strings.Contains(out, "["+b.label+"]") {
 			t.Errorf("button %q not visible at width 80", b.label)
 		}
@@ -369,6 +369,39 @@ func TestCopyToClipboard(t *testing.T) {
 	got, err := clipboard.ReadAll()
 	if err != nil || strings.ReplaceAll(got, "\r\n", "\n") != text {
 		t.Fatalf("clipboard %q, %v", got, err)
+	}
+}
+
+func TestViewCycleWithOneKey(t *testing.T) {
+	mgr, _ := core.NewManagerAt("")
+	a := New(mgr)
+	send(t, a, tea.WindowSizeMsg{Width: 200, Height: 30})
+	long := strings.Repeat("zeile\n", 30) + "ende"
+	a.cur = core.Session{Messages: []core.Message{
+		{Kind: core.KindTool, Tool: "Bash", Text: "Bash ls", Detail: "$ ls"},
+		{Kind: core.KindResult, Text: "zeile (+30 Zeilen)", Detail: long},
+	}}
+	view := func() string { a.renderMessages(); a.vp.GotoBottom(); return ansi.Strip(a.vp.View()) }
+
+	steps := []struct {
+		name, mustHave, mustNot string
+	}{
+		{"normal", "… +27 Zeilen", "ende"},
+		{"alles", "ende", "… +"},
+		{"kompakt", "… +30 Zeilen", "ende"},
+		{"normal", "… +27 Zeilen", "ende"},
+	}
+	for i, st := range steps {
+		if i > 0 {
+			send(t, a, tea.KeyMsg{Type: tea.KeyCtrlO})
+		}
+		out := view()
+		if a.viewName() != st.name || !strings.Contains(out, st.mustHave) || strings.Contains(out, st.mustNot) {
+			t.Fatalf("step %d: view=%s\n%s", i, a.viewName(), out)
+		}
+		if !strings.Contains(ansiStrip(a.renderButtons()), "[Ansicht: "+st.name+"]") {
+			t.Fatalf("button does not show %q", st.name)
+		}
 	}
 }
 
