@@ -257,7 +257,11 @@ func (a *Model) setTab(t tab) tea.Cmd {
 		return a.openFiles()
 	case tabNotes:
 		a.focus = focusNotes
-		a.notes.SetValue(s.Notes)
+		if a.notesFor != s.ID {
+			a.saveNotes()
+			a.notes.SetValue(s.Notes)
+			a.notesFor = s.ID
+		}
 		return a.notes.Focus()
 	case tabPins:
 		a.focus = focusPins
@@ -269,14 +273,24 @@ func (a *Model) setTab(t tab) tea.Cmd {
 	return a.input.Focus()
 }
 
+// saveNotes stores the notes editor into the session it was loaded for
+// (which is not necessarily the selected one after a session switch).
+func (a *Model) saveNotes() bool {
+	if a.notesFor == "" {
+		return false
+	}
+	a.mgr.SetNotes(a.notesFor, a.notes.Value())
+	return true
+}
+
 // backToInput leaves a panel: notes are saved, the history tab is shown
 // again and the message field gets the focus (esc).
 func (a *Model) backToInput() tea.Cmd {
-	if a.focus == focusNotes {
-		if s, ok := a.selected(); ok {
-			a.mgr.SetNotes(s.ID, a.notes.Value())
+	if a.focus == focusNotes || a.tab == tabNotes {
+		if a.saveNotes() {
 			a.status = "Notizen gespeichert"
 		}
+		a.notesFor = ""
 		a.notes.Blur()
 	}
 	a.tab = tabHistory
@@ -490,9 +504,7 @@ func (a *Model) cycleFocus(d int) tea.Cmd {
 	}
 	next := order[(pos+d+len(order))%len(order)]
 	if a.focus == focusNotes && next != focusNotes {
-		if s, ok := a.selected(); ok {
-			a.mgr.SetNotes(s.ID, a.notes.Value())
-		}
+		a.saveNotes()
 		a.notes.Blur()
 	}
 	a.focus = next

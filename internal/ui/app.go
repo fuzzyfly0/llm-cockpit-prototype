@@ -114,6 +114,8 @@ type Model struct {
 	paletteSel int
 	histPos    int
 	quitArmed  time.Time
+	// notesFor is the session whose notes are in the notes editor.
+	notesFor string
 	// Session search (ctrl+k): the query is typed into the message field,
 	// draft keeps the message that was being written.
 	switching bool
@@ -248,11 +250,19 @@ func (a *Model) refresh() {
 		if id != prevID {
 			a.stickBottom = true
 			a.expanded = map[int]bool{}
+			a.pinSel = 0
 			a.watch(a.sessions[a.sel].Dir)
+			// The notes editor belongs to one session: save it before
+			// showing another one.
+			a.saveNotes()
 		}
 		a.mgr.MarkRead(id)
 		a.sessions[a.sel].Unread = false
 		a.cur, _ = a.mgr.Get(id)
+		if id != prevID && a.tab == tabNotes {
+			a.notes.SetValue(a.cur.Notes)
+			a.notesFor = id
+		}
 	}
 	if a.msgCursor >= len(a.cur.Messages) {
 		a.msgCursor = len(a.cur.Messages) - 1
@@ -595,9 +605,8 @@ func (a *Model) clickRightPanel(r int) tea.Cmd {
 // leaveForInput gives the message field the focus (saving open notes).
 func (a *Model) leaveForInput() tea.Cmd {
 	if a.focus == focusNotes {
-		if s, ok := a.selected(); ok {
-			a.mgr.SetNotes(s.ID, a.notes.Value())
-		}
+		a.saveNotes()
+		a.notesFor = ""
 		a.notes.Blur()
 		a.tab = tabHistory
 	}

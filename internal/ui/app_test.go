@@ -381,6 +381,45 @@ func TestFilesFollowSessionSwitch(t *testing.T) {
 	check("ctrl+k")
 }
 
+// Regression: with the Notizen tab open, iterating the session list kept
+// the old session's notes in the editor and saved them into the next one.
+func TestNotesAndPinsFollowSessionSwitch(t *testing.T) {
+	a, mgr := newWith(t, 140, 30, "eins", "zwei")
+	mgr.SetNotes(a.sessions[1].ID, "Notizen von zwei")
+	pinned := core.Message{UUID: "u1", Kind: core.KindAssistant, Text: "x"}
+	mgr.TogglePin(a.sessions[1].ID, "u1", pinLabel(pinned))
+	a.refresh()
+
+	send(t, a, alt('3')) // Notizen of "eins"
+	typeText(t, a, "Notizen von eins")
+	send(t, a, special(tea.KeyShiftTab)) // to the session list (from the right panel back)
+	if a.focus != focusList && a.focus != focusInput {
+		t.Fatalf("focus %d", a.focus)
+	}
+	a.focus = focusList
+	_, cmd := a.handlePanelKey(special(tea.KeyDown)) // just iterate to "zwei"
+	run(t, a, cmd)
+	if a.cur.Name != "zwei" || a.notes.Value() != "Notizen von zwei" {
+		t.Fatalf("editor shows %q for %q", a.notes.Value(), a.cur.Name)
+	}
+	s1, _ := mgr.Get(a.sessions[0].ID)
+	s2, _ := mgr.Get(a.sessions[1].ID)
+	if s1.Notes != "Notizen von eins" || s2.Notes != "Notizen von zwei" {
+		t.Fatalf("saved notes: eins=%q zwei=%q", s1.Notes, s2.Notes)
+	}
+	// Pins tab shows the pins of the selected session.
+	send(t, a, alt('4'))
+	if !strings.Contains(ansiStrip(a.View()), "★ x") {
+		t.Fatalf("pins of zwei not shown:\n%s", ansiStrip(a.View()))
+	}
+	a.focus = focusList
+	_, cmd = a.handlePanelKey(special(tea.KeyUp))
+	run(t, a, cmd)
+	if out := ansiStrip(a.View()); a.cur.Name != "eins" || !strings.Contains(out, "Noch keine Pins") {
+		t.Fatalf("pins of eins not shown for %q:\n%s", a.cur.Name, out)
+	}
+}
+
 func TestSessionLink(t *testing.T) {
 	a, _ := newWith(t, 120, 30, "PROJ-123")
 	a.runAction("link")
