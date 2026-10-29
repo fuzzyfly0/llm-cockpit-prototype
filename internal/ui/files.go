@@ -308,7 +308,7 @@ func (a *Model) handleFilesKey(key string) (tea.Model, tea.Cmd) {
 			a.overlayBack = focusFiles
 			return a, func() tea.Msg {
 				out, err := platform.GitDiffFile(dir, rel)
-				return overlayMsg{"git diff – " + rel, withErr(out, err)}
+				return overlayMsg{"git diff – " + rel, withErr(out, err), ""}
 			}
 		}
 	}
@@ -335,7 +335,7 @@ func (a *Model) activateFile() tea.Cmd {
 	a.overlayBack = focusFiles
 	return func() tea.Msg {
 		out, err := platform.ReadPreview(p)
-		return overlayMsg{rel + dim.Render("  (c öffnet in der IDE)"), withErr(out, err)}
+		return overlayMsg{rel + dim.Render("  (aktualisiert sich live)"), withErr(out, err), p}
 	}
 }
 

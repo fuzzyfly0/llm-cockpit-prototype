@@ -132,6 +132,30 @@ func TestStreamingRender(t *testing.T) {
 
 func ansiStrip(s string) string { return ansi.Strip(s) }
 
+// collect runs a (batch) command and returns the resulting messages, skipping
+// commands that block (like waitFS) after a short timeout.
+func collect(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	var msg tea.Msg
+	select {
+	case msg = <-done:
+	case <-time.After(time.Second):
+		return nil
+	}
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		var out []tea.Msg
+		for _, c := range batch {
+			out = append(out, collect(c)...)
+		}
+		return out
+	}
+	return []tea.Msg{msg}
+}
+
 // run executes a command and feeds its message back, like the Bubble Tea loop.
 func run(t *testing.T, a *Model, cmd tea.Cmd) {
 	t.Helper()
@@ -175,6 +199,25 @@ func TestFileView(t *testing.T) {
 	if a.focus != focusOverlay || !strings.Contains(a.overlay.View(), "package main") {
 		t.Fatalf("preview not shown: focus=%d\n%s", a.focus, a.overlay.View())
 	}
+	// A save from the IDE reaches the open preview via the file watcher.
+	if err := os.WriteFile(filepath.Join(dir, "src", "main.go"), []byte("package main\n// aus der IDE\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case d := <-a.fsEvents:
+		cmd := a.onFilesChanged(d)
+		for _, m := range collect(cmd) {
+			if _, ok := m.(fsMsg); !ok {
+				send(t, a, m)
+			}
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("watcher did not report the change")
+	}
+	if !strings.Contains(a.overlay.View(), "aus der IDE") {
+		t.Fatalf("preview not updated:\n%s", a.overlay.View())
+	}
+
 	send(t, a, special(tea.KeyEsc))
 	if a.focus != focusFiles {
 		t.Fatalf("esc from preview should return to files, focus=%d", a.focus)

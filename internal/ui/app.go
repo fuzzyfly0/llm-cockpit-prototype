@@ -27,7 +27,15 @@ type gitMsg struct {
 	info platform.GitInfo
 }
 
-type overlayMsg struct{ title, body string }
+// overlayMsg opens the overlay; path is set for file previews so they can
+// follow changes on disk.
+type overlayMsg struct{ title, body, path string }
+
+// previewMsg refreshes an open file preview without moving its scroll position.
+type previewMsg struct{ path, body string }
+
+// fsMsg reports that files below the given directory changed.
+type fsMsg string
 
 type statusMsg string
 
@@ -100,6 +108,12 @@ type Model struct {
 	// overlayBack is the view to return to when the overlay is closed.
 	overlayBack focus
 	files       fileView
+	previewPath string
+
+	// The directory of the selected session is watched for changes.
+	fsEvents chan string
+	watcher  *platform.Watcher
+	watchDir string
 
 	vp      viewport.Model
 	overlay viewport.Model
@@ -119,15 +133,59 @@ func New(mgr *core.Manager) *Model {
 		git:     map[string]platform.GitInfo{},
 		vp:      viewport.New(0, 0),
 		overlay: viewport.New(0, 0),
-		input:   in,
-		notes:   ta,
+		input:    in,
+		notes:    ta,
+		fsEvents: make(chan string, 1),
 	}
 	a.refresh()
 	return a
 }
 
 func (a *Model) Init() tea.Cmd {
-	return tea.Batch(a.gitCmd(), tick())
+	return tea.Batch(a.gitCmd(), tick(), a.waitFS())
+}
+
+func (a *Model) waitFS() tea.Cmd {
+	ch := a.fsEvents
+	return func() tea.Msg { return fsMsg(<-ch) }
+}
+
+// watch moves the file watcher to dir (the selected session's folder).
+func (a *Model) watch(dir string) {
+	if dir == a.watchDir {
+		return
+	}
+	a.watcher.Close()
+	a.watcher, a.watchDir = nil, dir
+	ch := a.fsEvents
+	w, err := platform.Watch(dir, func() {
+		select {
+		case ch <- dir:
+		default:
+		}
+	})
+	if err == nil {
+		a.watcher = w
+	}
+}
+
+func (a *Model) onFilesChanged(dir string) tea.Cmd {
+	cmds := []tea.Cmd{a.waitFS()}
+	if dir != a.cur.Dir {
+		return tea.Batch(cmds...)
+	}
+	cmds = append(cmds, a.gitCmd())
+	if a.focus == focusFiles {
+		cmds = append(cmds, filesCmd(a.files.dir))
+	}
+	if a.focus == focusOverlay && a.previewPath != "" {
+		p := a.previewPath
+		cmds = append(cmds, func() tea.Msg {
+			out, err := platform.ReadPreview(p)
+			return previewMsg{p, withErr(out, err)}
+		})
+	}
+	return tea.Batch(cmds...)
 }
 
 func tick() tea.Cmd {
@@ -156,6 +214,7 @@ func (a *Model) refresh() {
 		id := a.sessions[a.sel].ID
 		if id != prevID {
 			a.stickBottom = true
+			a.watch(a.sessions[a.sel].Dir)
 		}
 		a.mgr.MarkRead(id)
 		a.sessions[a.sel].Unread = false
@@ -217,11 +276,20 @@ func (a *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case filesMsg:
 		a.applyFiles(msg)
 		return a, nil
+	case fsMsg:
+		return a, a.onFilesChanged(string(msg))
+	case previewMsg:
+		if a.focus == focusOverlay && msg.path == a.previewPath {
+			a.overlayRaw = msg.body
+			a.overlay.SetContent(fitLines(msg.body, a.overlay.Width))
+		}
+		return a, nil
 	case statusMsg:
 		a.status = string(msg)
 		return a, nil
 	case overlayMsg:
 		a.setOverlay(msg.title, msg.body)
+		a.previewPath = msg.path
 		return a, a.gitCmd()
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
@@ -542,6 +610,7 @@ func (a *Model) handleNav(key string) (tea.Model, tea.Cmd) {
 	case "?":
 		a.showHelp = true
 		a.overlayBack = focusList
+		a.previewPath = ""
 		a.setOverlay("Tastenkürzel", helpText)
 	}
 	if !has {
@@ -621,10 +690,10 @@ func (a *Model) handleNav(key string) (tea.Model, tea.Cmd) {
 		return a, func() tea.Msg {
 			if pull {
 				out, err := platform.GitPull(dir)
-				return overlayMsg{"git pull --ff-only", withErr(out, err)}
+				return overlayMsg{"git pull --ff-only", withErr(out, err), ""}
 			}
 			out, err := platform.GitDiff(dir)
-			return overlayMsg{"git diff", withErr(out, err)}
+			return overlayMsg{"git diff", withErr(out, err), ""}
 		}
 	}
 	return a, nil
