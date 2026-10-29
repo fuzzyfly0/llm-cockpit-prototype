@@ -179,6 +179,10 @@ type GitInfo struct {
 	Branch string
 	Dirty  int
 	WebURL string // browser URL of origin, if it is a known forge
+	// Root is the main checkout of the repository; for a linked worktree it
+	// differs from the session folder's own top level.
+	Root       string
+	IsWorktree bool
 }
 
 func git(dir string, args ...string) (string, error) {
@@ -192,6 +196,7 @@ func GitStatus(dir string) GitInfo {
 		return GitInfo{}
 	}
 	info := GitInfo{IsRepo: true, Branch: branch}
+	info.Root, info.IsWorktree = repoRoot(dir)
 	if st, err := git(dir, "status", "--porcelain"); err == nil && st != "" {
 		info.Dirty = len(strings.Split(st, "\n"))
 	}

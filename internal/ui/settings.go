@@ -19,7 +19,9 @@ type picker struct {
 	title   string
 	options []pickOption
 	sel     int
-	apply   func(value string) string
+	// apply handles the choice; a non-empty text becomes the status line,
+	// the command (if any) runs in the background.
+	apply func(value string) (string, tea.Cmd)
 }
 
 var modelOptions = []pickOption{
@@ -48,7 +50,7 @@ func optionLabel(opts []pickOption, value string) string {
 	return value
 }
 
-func (a *Model) openPicker(title string, opts []pickOption, current string, apply func(string) string) {
+func (a *Model) openPicker(title string, opts []pickOption, current string, apply func(string) (string, tea.Cmd)) {
 	a.pick = picker{title: title, options: opts, apply: apply}
 	for i, o := range opts {
 		if o.value == current {
@@ -58,14 +60,27 @@ func (a *Model) openPicker(title string, opts []pickOption, current string, appl
 	a.focus = focusPick
 }
 
-func (a *Model) choosePick(i int) {
+// choosePick applies option i. The apply function may open the next step
+// (another picker or a prompt); otherwise the list gets the focus back.
+func (a *Model) choosePick(i int) tea.Cmd {
 	if i < 0 || i >= len(a.pick.options) {
-		return
+		return nil
 	}
-	o := a.pick.options[i]
-	a.status = a.pick.title + ": " + o.label + " – " + a.pick.apply(o.value)
+	p := a.pick
 	a.focus = focusList
+	msg, cmd := p.apply(p.options[i].value)
+	if msg != "" {
+		a.status = msg
+	}
 	a.refresh()
+	return cmd
+}
+
+// settingApply wraps a manager setter for the model/effort pickers.
+func (a *Model) settingApply(title string, opts []pickOption, set func(string) string) func(string) (string, tea.Cmd) {
+	return func(v string) (string, tea.Cmd) {
+		return title + ": " + optionLabel(opts, v) + " – " + set(v), nil
+	}
 }
 
 func (a *Model) handlePickKey(key string) (tea.Model, tea.Cmd) {
@@ -77,7 +92,7 @@ func (a *Model) handlePickKey(key string) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		a.pick.sel = min(a.pick.sel+1, len(a.pick.options)-1)
 	case "enter", " ":
-		a.choosePick(a.pick.sel)
+		return a, a.choosePick(a.pick.sel)
 	}
 	return a, nil
 }

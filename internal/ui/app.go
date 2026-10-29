@@ -55,6 +55,7 @@ const (
 	focusConfirm
 	focusFiles
 	focusPick
+	focusNewWorktree
 )
 
 const leftW = 34
@@ -94,6 +95,9 @@ type Model struct {
 	// number of screen rows it uses (for mouse hits).
 	listStart int
 	listRows  int
+	// rowMap maps each visible list row to a session index (-1: header).
+	rowMap  []int
+	newRepo string
 	// stickBottom forces the next render to scroll to the newest message.
 	stickBottom bool
 	// details shows tool inputs and several result lines (v toggles);
@@ -158,7 +162,7 @@ func New(mgr *core.Manager) *Model {
 }
 
 func (a *Model) Init() tea.Cmd {
-	return tea.Batch(a.gitCmd(), tick(), a.waitFS())
+	return tea.Batch(a.gitAllCmd(), tick(), a.waitFS())
 }
 
 func (a *Model) waitFS() tea.Cmd {
@@ -284,6 +288,8 @@ func (a *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case gitMsg:
 		a.git[msg.dir] = msg.info
 		return a, nil
+	case worktreeMsg:
+		return a, a.onWorktreeAdded(msg)
 	case tickMsg:
 		cmds := []tea.Cmd{a.gitCmd(), tick()}
 		if a.focus == focusFiles {
@@ -430,7 +436,7 @@ func (a *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 	// Modal views: only their own area reacts to clicks.
 	switch a.focus {
-	case focusConfirm, focusNewDir, focusNewName:
+	case focusConfirm, focusNewDir, focusNewName, focusNewWorktree:
 		return a, nil
 	case focusPins:
 		if inRight && row >= 1 && row-1 < len(a.cur.Pins) {
@@ -440,7 +446,7 @@ func (a *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	case focusPick:
 		if inRight && row >= 1 {
-			a.choosePick(row - 1)
+			return a, a.choosePick(row - 1)
 		} else if !inRight {
 			a.focus = focusList
 		}
@@ -474,8 +480,8 @@ func (a *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 	switch {
 	case inLeft && row >= 0:
-		idx := a.listStart + row/2
-		if row < a.listRows && idx < len(a.sessions) {
+		if row < a.listRows && a.rowMap[row] >= 0 {
+			idx := a.rowMap[row]
 			// Selecting a session by mouse makes it ready for typing.
 			a.focus = focusInput
 			focusCmd := a.input.Focus()
@@ -542,40 +548,35 @@ func (a *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, cmd
 
-	case focusNewDir, focusNewName:
+	case focusNewDir, focusNewName, focusNewWorktree:
 		switch key {
 		case "esc":
 			a.input.Blur()
-			a.input.SetValue("")
-			a.input.Prompt = "› "
+			a.resetInput()
 			a.focus = focusList
 		case "enter":
 			val := strings.TrimSpace(a.input.Value())
-			if a.focus == focusNewDir {
+			switch a.focus {
+			case focusNewDir:
 				dir, err := filepath.Abs(expandHome(val))
 				if info, statErr := os.Stat(dir); err != nil || statErr != nil || !info.IsDir() {
 					a.status = "Ordner existiert nicht: " + val
 					return a, nil
 				}
-				a.newDir = dir
-				a.focus = focusNewName
-				a.input.Prompt = "Neue Session › Name: "
-				a.input.SetValue(filepath.Base(dir))
-				a.input.CursorEnd()
+				// In a git repository the session may get its own worktree.
+				if repo := platform.RepoRoot(dir); repo != "" {
+					a.chooseWorkspace(dir, repo)
+					return a, nil
+				}
+				a.askName(dir)
 				return a, nil
+			case focusNewWorktree:
+				return a, a.newWorktreeEntered(val)
 			}
 			if val == "" {
 				val = filepath.Base(a.newDir)
 			}
-			if _, err := a.mgr.Create(val, a.newDir); err != nil {
-				a.status = "Start fehlgeschlagen: " + err.Error()
-			}
-			a.sel = len(a.mgr.List()) - 1
-			a.input.SetValue("")
-			a.input.Prompt = "› "
-			a.focus = focusInput
-			a.refresh()
-			return a, a.gitCmd()
+			return a, a.createSession(val, a.newDir)
 		default:
 			a.input, cmd = a.input.Update(msg)
 		}
@@ -661,16 +662,14 @@ func (a *Model) handleNav(key string) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		if a.focus == focusMessages {
 			a.moveCursor(-1)
-		} else if a.sel > 0 {
-			a.sel--
+		} else if a.moveSelection(-1) {
 			a.refresh()
 			return a, a.gitCmd()
 		}
 	case "down", "j":
 		if a.focus == focusMessages {
 			a.moveCursor(1)
-		} else if a.sel < len(a.sessions)-1 {
-			a.sel++
+		} else if a.moveSelection(1) {
 			a.refresh()
 			return a, a.gitCmd()
 		}
@@ -728,9 +727,7 @@ func (a *Model) handleNav(key string) (tea.Model, tea.Cmd) {
 		a.mgr.Stop(s.ID)
 		a.status = "Session gestoppt (mit r oder einer Nachricht fortsetzen)"
 	case "ctrl+d":
-		a.focus = focusConfirm
-		a.status = fmt.Sprintf("Session %q aus dem Cockpit entfernen? (y/n)", s.Name)
-		a.confirm = func() { a.mgr.Remove(s.ID); a.refresh() }
+		a.confirmRemove(s)
 	case "t":
 		if s.ClaudeID == "" {
 			a.status = "Session hat noch keine Claude-ID (erst eine Nachricht senden)"
@@ -778,10 +775,12 @@ func (a *Model) handleNav(key string) (tea.Model, tea.Cmd) {
 		return a, a.openFiles()
 	case "M":
 		id := s.ID
-		a.openPicker("Modell – "+s.Name, modelOptions, s.Model, func(v string) string { return a.mgr.SetModel(id, v) })
+		a.openPicker("Modell – "+s.Name, modelOptions, s.Model,
+			a.settingApply("Modell", modelOptions, func(v string) string { return a.mgr.SetModel(id, v) }))
 	case "E":
 		id := s.ID
-		a.openPicker("Effort – "+s.Name, effortOptions, s.Effort, func(v string) string { return a.mgr.SetEffort(id, v) })
+		a.openPicker("Effort – "+s.Name, effortOptions, s.Effort,
+			a.settingApply("Effort", effortOptions, func(v string) string { return a.mgr.SetEffort(id, v) }))
 	case "g":
 		u := a.git[s.Dir].WebURL
 		if u == "" {
@@ -980,7 +979,7 @@ func (a *Model) View() string {
 		Render(a.renderList(bodyH))
 	right := box(a.focus != focusList && a.focus != focusInput).Width(rightW).Height(bodyH).MaxHeight(bodyH + 2).
 		Render(a.renderRight(rightW))
-	inputFocused := a.focus == focusInput || a.focus == focusNewDir || a.focus == focusNewName
+	inputFocused := a.focus == focusInput || a.focus == focusNewDir || a.focus == focusNewName || a.focus == focusNewWorktree
 	input := box(inputFocused).Width(a.w - 2).Render(a.input.View())
 
 	var help string
@@ -1007,40 +1006,63 @@ func (a *Model) renderList(h int) string {
 }
 
 func (a *Model) renderSessions(h int) string {
+	a.rowMap, a.listRows = nil, 0
 	if len(a.sessions) == 0 {
 		return dim.Render("Keine Sessions.\n\nn oder [+ Neu] = neue Session")
 	}
-	perItem := 2
-	visible := max(h/perItem, 1)
-	start := 0
-	if a.sel >= visible {
-		start = a.sel - visible + 1
-	}
-	a.listStart = start
+	// Build all rows (group headers + two rows per session), then show the
+	// window that contains the selected session.
 	var lines []string
-	for i := start; i < len(a.sessions) && i < start+visible; i++ {
-		s := a.sessions[i]
-		mark := " "
-		if s.Unread {
-			mark = pinStyle.Render("•")
+	var rowMap []int
+	selRow := 0
+	for _, g := range a.groups() {
+		lines = append(lines, ansi.Truncate(dim.Render("▾ ")+bold.Render(g.label)+dim.Render(fmt.Sprintf(" (%d)", len(g.sessions))), leftW, "…"))
+		rowMap = append(rowMap, -1)
+		for _, i := range g.sessions {
+			s := a.sessions[i]
+			mark := " "
+			if s.Unread {
+				mark = pinStyle.Render("•")
+			}
+			branch := ""
+			if gi := a.git[s.Dir]; gi.IsRepo {
+				// Worktree sessions are usually named like their branch.
+				if gi.Branch == s.Name {
+					branch = dim.Render("  ⎇")
+				} else {
+					branch = dim.Render("  ⎇ " + gi.Branch)
+				}
+			}
+			title := ansi.Truncate(fmt.Sprintf("  %s %s %s", statusStyle(s.Status).Render(statusIcon(s.Status)), mark, s.Name)+branch, leftW, "…")
+			sub := s.Preview()
+			if sub == "" {
+				sub = s.Status.String()
+			}
+			sub = dim.Render(ansi.Truncate("      "+strings.ReplaceAll(sub, "\n", " "), leftW, "…"))
+			if i == a.sel {
+				selRow = len(lines)
+				plain := ansi.Strip(title)
+				title = selStyle.Render(ansi.Truncate(plain+strings.Repeat(" ", leftW), leftW, ""))
+			}
+			lines = append(lines, title, sub)
+			rowMap = append(rowMap, i, i)
 		}
-		title := fmt.Sprintf("%s %s %s", statusStyle(s.Status).Render(statusIcon(s.Status)), mark, s.Name)
-		title = ansi.Truncate(title, leftW, "…")
-		sub := s.Preview()
-		if sub == "" {
-			sub = s.Status.String()
-		}
-		sub = dim.Render(ansi.Truncate("    "+strings.ReplaceAll(sub, "\n", " "), leftW, "…"))
-		if i == a.sel {
-			title = selStyle.Render(ansi.Truncate(fmt.Sprintf("%s %s %s", statusIcon(s.Status), " ", s.Name)+strings.Repeat(" ", leftW), leftW, ""))
-		}
-		lines = append(lines, title, sub)
 	}
-	a.listRows = len(lines)
-	return strings.Join(lines, "\n")
+	start := 0
+	if selRow+2 > h {
+		start = selRow + 2 - h
+	}
+	end := min(start+h, len(lines))
+	a.listStart = start
+	a.rowMap = rowMap[start:end]
+	a.listRows = end - start
+	return strings.Join(lines[start:end], "\n")
 }
 
 func (a *Model) renderRight(w int) string {
+	if a.focus == focusPick {
+		return a.renderPick(w)
+	}
 	s, ok := a.selected()
 	if !ok {
 		return infoStyle.Render(a.status) + "\n" +
@@ -1117,26 +1139,32 @@ func expandHome(p string) string {
 }
 
 var helpLine = map[focus]string{
-	focusList:     "↑↓ wählen · enter schreiben · tab Verlauf · n neu · x stop · p pin · P pins · o notizen · f diff · u pull · e explorer · c IDE · g github · ? hilfe · q beenden",
-	focusMessages: "↑↓ Eintrag wählen · enter ganz zeigen · p pin · v Details · c Datei in IDE · f Diff in IDE · tab zurück",
-	focusInput:    "enter senden · pgup/pgdn Verlauf scrollen · tab Verlauf · esc Tastenkürzel (n neu, d Dateien, M Modell, …)",
-	focusNewDir:   "Ordner für die neue Session · enter weiter · esc abbrechen",
-	focusNewName:  "Name der Session · enter starten · esc abbrechen",
-	focusNotes:    "esc speichert die Notizen",
-	focusPins:     "↑↓ wählen · enter zur Stelle springen · x entfernen · esc zurück",
-	focusOverlay:  "↑↓/pgup/pgdn scrollen · esc schließen",
-	focusConfirm:  "y bestätigen · andere Taste abbrechen",
-	focusPick:     "↑↓ wählen · enter übernehmen · esc abbrechen",
-	focusFiles:    "↑↓ wählen · enter/Klick öffnen · →← auf/zu · m nur Änderungen · f Diff in IDE · F Diff hier · c IDE · e explorer · esc zurück",
+	focusList:        "↑↓ wählen · enter schreiben · tab Verlauf · n neu · x stop · p pin · P pins · o notizen · f diff · u pull · e explorer · c IDE · g github · ? hilfe · q beenden",
+	focusMessages:    "↑↓ Eintrag wählen · enter ganz zeigen · p pin · v Details · c Datei in IDE · f Diff in IDE · tab zurück",
+	focusInput:       "enter senden · pgup/pgdn Verlauf scrollen · tab Verlauf · esc Tastenkürzel (n neu, d Dateien, M Modell, …)",
+	focusNewDir:      "Ordner für die neue Session · enter weiter · esc abbrechen",
+	focusNewName:     "Name der Session · enter starten · esc abbrechen",
+	focusNewWorktree: "Name für Worktree und Branch, frei wählbar (z. B. login-fix, PROJ-123, feature/export) · enter anlegen · esc abbrechen",
+	focusNotes:       "esc speichert die Notizen",
+	focusPins:        "↑↓ wählen · enter zur Stelle springen · x entfernen · esc zurück",
+	focusOverlay:     "↑↓/pgup/pgdn scrollen · esc schließen",
+	focusConfirm:     "y bestätigen · andere Taste abbrechen",
+	focusPick:        "↑↓ wählen · enter übernehmen · esc abbrechen",
+	focusFiles:       "↑↓ wählen · enter/Klick öffnen · →← auf/zu · m nur Änderungen · f Diff in IDE · F Diff hier · c IDE · e explorer · esc zurück",
 }
 
 const helpText = `Sessions
   ↑/↓ j/k    Session wählen
-  n          neue Session (Ordner, dann Name)
+  n          neue Session: Ordner wählen; bei einem git-Repo dann
+             direkt im Ordner, neuer Worktree (eigener Branch, Name frei)
+             oder vorhandener Worktree / Branch
+             Worktrees liegen neben dem Repo in <repo>-worktrees\<name>
   enter / i  Nachricht an die Session schreiben
   r          Session starten / fortsetzen
   x          Session stoppen (Verlauf bleibt, fortsetzen mit r)
-  ctrl+d     Session aus dem Cockpit entfernen
+  ctrl+d     Session entfernen (bei Worktrees wahlweise mit Worktree;
+             der Branch bleibt immer erhalten)
+             Die Liste ist nach Repo gruppiert, ↑/↓ folgen der Anzeige.
   t          Session in externem Terminal öffnen (claude --resume)
 
 Verlauf, Pins, Notizen

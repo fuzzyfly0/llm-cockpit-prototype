@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +13,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/stefa/llm-cockpit/internal/core"
+	"github.com/stefa/llm-cockpit/internal/platform"
 )
 
 func keys(s string) tea.KeyMsg {
@@ -81,10 +84,19 @@ func TestMouse(t *testing.T) {
 	defer mgr.StopAll()
 	a := New(mgr)
 	send(t, a, tea.WindowSizeMsg{Width: 140, Height: 30})
+	run(t, a, a.gitAllCmd()) // both folders are no git repos: one group
 	a.View()
 
-	// Second session occupies content rows 2-3, i.e. screen rows 3-4.
-	send(t, a, click(5, 3))
+	// Row 0 is the group header "Ohne git-Repo", rows 1-2 the first
+	// session, rows 3-4 the second; screen rows are one lower (border).
+	if len(a.groups()) != 1 || a.groups()[0].label != "Ohne git-Repo" {
+		t.Fatalf("groups %+v", a.groups())
+	}
+	send(t, a, click(5, 1)) // header: no selection change
+	if a.sel != 0 {
+		t.Fatalf("click on header changed selection to %d", a.sel)
+	}
+	send(t, a, click(5, 4))
 	if a.sel != 1 || a.cur.Name != "zwei" {
 		t.Fatalf("click on session: sel=%d cur=%q", a.sel, a.cur.Name)
 	}
@@ -346,13 +358,112 @@ func collect(cmd tea.Cmd) []tea.Msg {
 	return []tea.Msg{msg}
 }
 
-// run executes a command and feeds its message back, like the Bubble Tea loop.
+// run executes a (batch) command and feeds its messages back, like the
+// Bubble Tea loop.
 func run(t *testing.T, a *Model, cmd tea.Cmd) {
 	t.Helper()
-	if cmd != nil {
-		if msg := cmd(); msg != nil {
-			send(t, a, msg)
+	runDepth(t, a, cmd, 0)
+}
+
+func runDepth(t *testing.T, a *Model, cmd tea.Cmd, depth int) {
+	t.Helper()
+	if depth > 5 {
+		return
+	}
+	for _, msg := range collect(cmd) {
+		switch msg.(type) {
+		case fsMsg, tickMsg:
+			continue // endless background loops
 		}
+		if strings.HasPrefix(fmt.Sprintf("%T", msg), "cursor.") {
+			continue // cursor blinking
+		}
+		_, next := a.Update(msg)
+		runDepth(t, a, next, depth+1)
+	}
+}
+
+// gitRepo creates a repository with one commit.
+func gitRepo(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "shop")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cart.go"), []byte("package shop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "."}, {"commit", "-q", "-m", "init"}} {
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	return dir
+}
+
+func TestWorktreeSessionFlow(t *testing.T) {
+	repo := gitRepo(t)
+	t.Cleanup(func() { _ = os.RemoveAll(repo + "-worktrees") })
+	mgr, _ := core.NewManagerAt("")
+	defer mgr.StopAll()
+	a := New(mgr)
+	send(t, a, tea.WindowSizeMsg{Width: 140, Height: 40})
+
+	// n, folder of the repo → choice "direkt / neuer Worktree / …".
+	send(t, a, keys("n"))
+	a.input.SetValue(repo)
+	send(t, a, special(tea.KeyEnter))
+	if a.focus != focusPick || a.pick.options[1].value != "new" {
+		t.Fatalf("no workspace choice: focus=%d status=%q", a.focus, a.status)
+	}
+	run(t, a, a.choosePick(1)) // "Neuer Worktree mit neuem Branch"
+	if a.focus != focusNewWorktree {
+		t.Fatalf("focus=%d", a.focus)
+	}
+	a.input.SetValue("PROJ-123 Warenkorb")
+	_, cmd := a.handleKey(special(tea.KeyEnter))
+	run(t, a, cmd) // runs git worktree add, then creates the session
+
+	wt := platform.WorktreeDir(repo, "PROJ-123-Warenkorb")
+	if a.cur.Dir != wt || a.cur.Name != "PROJ-123-Warenkorb" {
+		t.Fatalf("session %q in %q, want %q (status %q)", a.cur.Name, a.cur.Dir, wt, a.status)
+	}
+	if g := a.git[wt]; !g.IsWorktree || g.Branch != "PROJ-123-Warenkorb" {
+		t.Fatalf("git info %+v", g)
+	}
+
+	// A second session directly in the repo lands in the same group.
+	send(t, a, special(tea.KeyEsc))
+	send(t, a, keys("n"))
+	a.input.SetValue(repo)
+	send(t, a, special(tea.KeyEnter))
+	run(t, a, a.choosePick(0)) // direkt im Ordner
+	_, cmd = a.handleKey(special(tea.KeyEnter))
+	run(t, a, cmd)
+	groups := a.groups()
+	if len(groups) != 1 || groups[0].label != "shop" || len(groups[0].sessions) != 2 {
+		t.Fatalf("groups %+v", groups)
+	}
+	if out := ansiStrip(a.View()); !strings.Contains(out, "▾ shop (2)") || !strings.Contains(out, "PROJ-123-Warenkorb  ⎇") ||
+		!strings.Contains(out, "shop  ⎇ master") {
+		t.Fatalf("list not grouped:\n%s", out)
+	}
+
+	// Remove the worktree session together with its worktree.
+	send(t, a, special(tea.KeyEsc))
+	a.sel = 0
+	a.refresh()
+	send(t, a, tea.KeyMsg{Type: tea.KeyCtrlD})
+	if a.focus != focusPick || a.pick.options[1].value != "delete" {
+		t.Fatalf("no removal choice: focus=%d", a.focus)
+	}
+	run(t, a, a.choosePick(1))
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Fatalf("worktree still exists (status %q): %v", a.status, err)
+	}
+	if len(mgr.List()) != 1 {
+		t.Fatalf("sessions left: %d", len(mgr.List()))
 	}
 }
 
