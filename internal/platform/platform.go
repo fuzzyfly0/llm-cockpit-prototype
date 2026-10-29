@@ -3,10 +3,13 @@ package platform
 
 import (
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 )
 
@@ -39,9 +42,48 @@ func OpenIDE(ide, dir string) error {
 	if ide == "" {
 		return errors.New("keine IDE konfiguriert")
 	}
-	cmd := exec.Command(ide, dir)
+	bin, err := exec.LookPath(ide)
+	if err != nil && (ide == "idea" || ide == "idea64") {
+		bin = FindIntelliJ()
+	}
+	if bin == "" {
+		return fmt.Errorf("IDE %q nicht gefunden (config.ide in state.json setzen)", ide)
+	}
+	cmd := exec.Command(bin, dir)
 	cmd.Dir = dir
 	return cmd.Start()
+}
+
+// FindIntelliJ looks for an IntelliJ IDEA launcher in the usual install
+// locations (standalone installer and JetBrains Toolbox) and returns the
+// newest one, or "" if none is found.
+func FindIntelliJ() string {
+	var patterns []string
+	home, _ := os.UserHomeDir()
+	if runtime.GOOS == "windows" {
+		local := os.Getenv("LOCALAPPDATA")
+		patterns = []string{
+			filepath.Join(os.Getenv("ProgramFiles"), "JetBrains", "IntelliJ IDEA*", "bin", "idea64.exe"),
+			filepath.Join(local, "Programs", "IntelliJ IDEA*", "bin", "idea64.exe"),
+			filepath.Join(local, "JetBrains", "Toolbox", "scripts", "idea*.cmd"),
+		}
+	} else {
+		patterns = []string{
+			filepath.Join(home, ".local", "share", "JetBrains", "Toolbox", "scripts", "idea*"),
+			filepath.Join(home, ".local", "share", "JetBrains", "Toolbox", "apps", "intellij-idea*", "bin", "idea"),
+			filepath.Join(home, ".local", "share", "JetBrains", "Toolbox", "apps", "intellij-idea*", "bin", "idea.sh"),
+			"/opt/idea*/bin/idea.sh",
+			"/snap/bin/intellij-idea-*",
+		}
+	}
+	for _, p := range patterns {
+		matches, _ := filepath.Glob(p)
+		if len(matches) > 0 {
+			sort.Strings(matches)
+			return matches[len(matches)-1]
+		}
+	}
+	return ""
 }
 
 // OpenTerminal starts args in a new terminal window inside dir.
