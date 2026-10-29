@@ -19,7 +19,7 @@ type state struct {
 	Sessions []*Session `json:"sessions"`
 }
 
-func statePath() (string, error) {
+func defaultStatePath() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
@@ -27,26 +27,38 @@ func statePath() (string, error) {
 	return filepath.Join(dir, "llm-cockpit", "state.json"), nil
 }
 
-func loadState() (*state, error) {
-	st := &state{Config: Config{ClaudeBin: "claude", PermissionMode: "acceptEdits", IDE: "idea"}}
-	p, err := statePath()
-	if err != nil {
+func loadState(p string) (*state, error) {
+	st := &state{}
+	data, err := os.ReadFile(p)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		applyDefaults(&st.Config)
 		return st, err
 	}
-	data, err := os.ReadFile(p)
 	if errors.Is(err, os.ErrNotExist) {
+		applyDefaults(&st.Config)
 		return st, nil
 	}
-	if err != nil {
-		return st, err
-	}
-	return st, json.Unmarshal(data, st)
+	err = json.Unmarshal(data, st)
+	applyDefaults(&st.Config)
+	return st, err
 }
 
-func saveState(st *state) error {
-	p, err := statePath()
-	if err != nil {
-		return err
+// applyDefaults fills empty config fields so a partial state.json still works.
+func applyDefaults(c *Config) {
+	if c.ClaudeBin == "" {
+		c.ClaudeBin = "claude"
+	}
+	if c.PermissionMode == "" {
+		c.PermissionMode = "acceptEdits"
+	}
+	if c.IDE == "" {
+		c.IDE = "idea"
+	}
+}
+
+func saveState(p string, st *state) error {
+	if p == "" {
+		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err

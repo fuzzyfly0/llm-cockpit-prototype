@@ -25,12 +25,19 @@ type process struct {
 type Manager struct {
 	mu       sync.Mutex
 	st       *state
+	path     string // state file; empty disables persistence (tests)
 	OnChange func()
 }
 
 func NewManager() (*Manager, error) {
-	st, err := loadState()
-	return &Manager{st: st}, err
+	p, err := defaultStatePath()
+	if err != nil {
+		st := &state{}
+		applyDefaults(&st.Config)
+		return &Manager{st: st}, err
+	}
+	st, err := loadState(p)
+	return &Manager{st: st, path: p}, err
 }
 
 func (m *Manager) Config() Config {
@@ -46,7 +53,7 @@ func (m *Manager) changed() {
 }
 
 func (m *Manager) save() {
-	_ = saveState(m.st)
+	_ = saveState(m.path, m.st)
 }
 
 func (m *Manager) find(id string) *Session {

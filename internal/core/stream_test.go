@@ -2,6 +2,8 @@ package core
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -51,6 +53,28 @@ func TestMessagesFrom(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLoadStateFillsEmptyConfig(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(p, []byte(`{"config":{"claude_bin":"","ide":"code"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := loadState(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Config{ClaudeBin: "claude", PermissionMode: "acceptEdits", IDE: "code"}
+	if st.Config != want {
+		t.Fatalf("got %+v, want %+v", st.Config, want)
+	}
+}
+
+func TestLoadStateMissingFileIsNotAnError(t *testing.T) {
+	st, err := loadState(filepath.Join(t.TempDir(), "missing.json"))
+	if err != nil || st.Config.ClaudeBin != "claude" {
+		t.Fatalf("got %+v, %v", st.Config, err)
 	}
 }
 
