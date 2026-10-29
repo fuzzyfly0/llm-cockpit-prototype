@@ -14,6 +14,9 @@ type Config struct {
 	IDE string `json:"ide"`
 	// ExtraArgs are appended to every claude invocation, e.g. ["--model", "sonnet"].
 	ExtraArgs []string `json:"extra_args,omitempty"`
+	// ThinkingDisplay asks Claude to stream its thinking: "summarized"
+	// (default, like Claude Code), "omitted" or "off" (don't ask).
+	ThinkingDisplay string `json:"thinking_display,omitempty"`
 }
 
 type state struct {
@@ -57,6 +60,9 @@ func applyDefaults(c *Config) {
 	}
 	if c.IDE == "" {
 		c.IDE = "idea"
+	}
+	if c.ThinkingDisplay == "" {
+		c.ThinkingDisplay = "summarized"
 	}
 }
 

@@ -104,7 +104,9 @@ type Model struct {
 	// expanded holds entries shown completely (enter toggles).
 	details  bool
 	expanded map[int]bool
-	pick     picker
+	// transcript shows every entry completely (ctrl+o, like Claude Code).
+	transcript bool
+	pick       picker
 
 	focus     focus
 	msgCursor int
@@ -315,6 +317,17 @@ func (a *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.previewPath = msg.path
 		return a, a.gitCmd()
 	case tea.KeyMsg:
+		if msg.String() == "ctrl+o" {
+			// Like Claude Code: show everything (thinking, full outputs).
+			a.transcript = !a.transcript
+			if a.transcript {
+				a.status = "Alles ausgeklappt (ctrl+o klappt wieder zu)"
+			} else {
+				a.status = "Kompakte Ansicht"
+			}
+			a.renderMessages()
+			return a, nil
+		}
 		if msg.String() == "ctrl+c" {
 			a.mgr.StopAll()
 			return a, tea.Quit
@@ -331,7 +344,7 @@ type button struct{ label, key string }
 var buttons = []button{
 	{"+ Neu", "n"}, {"Schreiben", "enter"}, {"Start", "r"}, {"Stop", "x"},
 	{"Modell", "M"}, {"Effort", "E"},
-	{"Dateien", "d"}, {"Pin", "p"}, {"Pins", "P"}, {"Notizen", "o"}, {"Diff", "f"}, {"Pull", "u"},
+	{"Dateien", "d"}, {"Kopieren", "y"}, {"Pin", "p"}, {"Pins", "P"}, {"Notizen", "o"}, {"Diff", "f"}, {"Pull", "u"},
 	{"Explorer", "e"}, {"IDE", "c"}, {"GitHub", "g"}, {"Terminal", "t"},
 	{"Entfernen", "ctrl+d"}, {"?", "?"}, {"Beenden", "q"},
 }
@@ -686,12 +699,7 @@ func (a *Model) handleNav(key string) (tea.Model, tea.Cmd) {
 		}
 		a.renderMessages()
 	case "n":
-		wd, _ := os.Getwd()
-		a.focus = focusNewDir
-		a.input.Prompt = "Neue Session › Ordner: "
-		a.input.SetValue(wd)
-		a.input.CursorEnd()
-		return a, a.input.Focus()
+		return a, a.newSession()
 	case "?":
 		a.showHelp = true
 		a.overlayBack = focusList
@@ -710,6 +718,18 @@ func (a *Model) handleNav(key string) (tea.Model, tea.Cmd) {
 		}
 		a.focus = focusInput
 		return a, a.input.Focus()
+	case "y":
+		i, ok := a.copyTarget()
+		if !ok {
+			a.status = "nichts zum Kopieren (tab, Eintrag wählen, dann y)"
+			break
+		}
+		text := copyText(s.Messages[i])
+		if err := platform.CopyToClipboard(text); err != nil {
+			a.status = "Kopieren fehlgeschlagen: " + err.Error()
+		} else {
+			a.status = fmt.Sprintf("kopiert: %d Zeichen, %d Zeilen", len([]rune(text)), strings.Count(text, "\n")+1)
+		}
 	case "v":
 		a.details = !a.details
 		if a.details {
@@ -870,6 +890,12 @@ func (a *Model) pinTarget() (int, bool) {
 	return 0, false
 }
 
+// copyTarget is the entry under the cursor, or the last Claude answer when
+// the session list has focus.
+func (a *Model) copyTarget() (int, bool) {
+	return a.pinTarget()
+}
+
 // pinLabel is the text shown in the pin list for an entry.
 func pinLabel(m core.Message) string {
 	switch m.Kind {
@@ -926,7 +952,7 @@ func (a *Model) renderMessages() {
 	for i, m := range msgs {
 		a.offsets = append(a.offsets, line)
 		selected := a.focus == focusMessages && i == a.msgCursor
-		block := a.renderMessage(m, prevTool, selected, a.expanded[i], width)
+		block := a.renderMessage(m, prevTool, selected, a.transcript || a.expanded[i], width)
 		if a.cur.IsPinned(keys[i]) {
 			first, rest, hasRest := strings.Cut(block, "\n")
 			block = first + pinStyle.Render(" ★")
@@ -938,7 +964,12 @@ func (a *Model) renderMessages() {
 			prevTool = m.Tool
 		}
 		if selected {
-			block = lipgloss.NewStyle().Background(lipgloss.Color("236")).Width(width).Render(block)
+			first, rest, hasRest := strings.Cut(block, "\n")
+			block = first + dim.Render("  [y] kopieren")
+			if hasRest {
+				block += "\n" + rest
+			}
+			block = markSelected(block)
 		}
 		// Like Claude Code: a blank line between entries, results stick to
 		// their tool call.
@@ -1140,7 +1171,7 @@ func expandHome(p string) string {
 
 var helpLine = map[focus]string{
 	focusList:        "↑↓ wählen · enter schreiben · tab Verlauf · n neu · x stop · p pin · P pins · o notizen · f diff · u pull · e explorer · c IDE · g github · ? hilfe · q beenden",
-	focusMessages:    "↑↓ Eintrag wählen · enter ganz zeigen · p pin · v Details · c Datei in IDE · f Diff in IDE · tab zurück",
+	focusMessages:    "↑↓ Eintrag wählen · enter ganz zeigen · y kopieren · p pin · v Details · c Datei in IDE · f Diff in IDE · tab zurück",
 	focusInput:       "enter senden · pgup/pgdn Verlauf scrollen · tab Verlauf · esc Tastenkürzel (n neu, d Dateien, M Modell, …)",
 	focusNewDir:      "Ordner für die neue Session · enter weiter · esc abbrechen",
 	focusNewName:     "Name der Session · enter starten · esc abbrechen",
@@ -1176,6 +1207,8 @@ Verlauf
   ↑/↓        Eintrag wählen (Antwort, Nachricht, Tool, Ergebnis, …)
   enter      Eintrag ganz anzeigen / wieder kürzen (auch 2. Klick)
   v          Details an/aus (Tool-Eingaben, mehrere Ergebniszeilen)
+  ctrl+o     alles ausklappen / zuklappen (wie in Claude Code)
+  y          gewählten Eintrag vollständig kopieren (in der Liste: letzte Antwort)
   c / f      auf ⏺-Zeile mit Datei: in der IDE öffnen / Diff in der IDE
   p          gewählten Eintrag pinnen / entpinnen (in der Liste: letzte Antwort)
   P          Pins anzeigen, enter springt zur Stelle

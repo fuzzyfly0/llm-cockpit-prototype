@@ -29,7 +29,57 @@ var (
 const (
 	detailLines = 12
 	resultLines = 4
+	diffLines   = 40
+	thinkLines  = 3
 )
+
+// colorPatch colors a numbered diff line from core.patchFrom
+// ("   22 +  text"): the marker sits in column 6.
+func colorPatch(l string) string {
+	if len(l) > 6 {
+		switch l[6] {
+		case '+':
+			return added.Render(l)
+		case '-':
+			return removed.Render(l)
+		}
+	}
+	return dim.Render(l)
+}
+
+var selBar = lipgloss.NewStyle().Foreground(accent).Bold(true).Render("▌") + " "
+
+// markSelected puts a bar in the first two columns of every line of an
+// entry. (A background color does not work: styled text resets it.)
+func markSelected(block string) string {
+	lines := strings.Split(block, "\n")
+	for i, l := range lines {
+		lines[i] = selBar + ansi.TruncateLeft(l, 2, "")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// copyText is what "copy" puts into the clipboard for an entry: always the
+// complete content, independent of how much is shown.
+func copyText(m core.Message) string {
+	switch m.Kind {
+	case core.KindTool:
+		if m.Tool == "Bash" || m.Tool == "PowerShell" {
+			// Only the command, without the "# description" line.
+			if i := strings.LastIndex(m.Detail, "$ "); i >= 0 {
+				return m.Detail[i+2:]
+			}
+		}
+		if m.Detail != "" {
+			return m.Detail
+		}
+	case core.KindResult, core.KindThinking:
+		if m.Detail != "" {
+			return m.Detail
+		}
+	}
+	return m.Text
+}
 
 // displayName maps tool names to the labels Claude Code uses.
 func displayName(tool string) string {
@@ -69,7 +119,7 @@ func clip(text string, n int) ([]string, int) {
 }
 
 func moreLine(prefix string, n int) string {
-	return prefix + dim.Render(fmt.Sprintf("… +%d Zeilen (enter zeigt alles)", n))
+	return prefix + dim.Render(fmt.Sprintf("… +%d Zeilen (enter / ctrl+o zeigt alles)", n))
 }
 
 // colorDiff colors "- " / "+ " lines as removed/added text.
@@ -97,10 +147,8 @@ func relTo(dir, p string) string {
 // renderMessage draws one history entry. prevTool is the tool of the
 // preceding tool call (for result summaries); expanded shows all lines.
 func (a *Model) renderMessage(m core.Message, prevTool string, selected, expanded bool, width int) string {
+	// The first two columns stay free for the selection bar (markSelected).
 	gutter := "  "
-	if selected {
-		gutter = "▶ "
-	}
 	indent := "  "
 	if m.Sub {
 		indent = dim.Render("│ ")
@@ -150,6 +198,11 @@ func (a *Model) renderMessage(m core.Message, prevTool string, selected, expande
 		if m.Tool == "Read" || m.Detail == "" || !showBody {
 			return head
 		}
+		// Like Claude Code, edits show their diff under the result; the raw
+		// old/new text only when the entry is expanded.
+		if (m.Tool == "Edit" || m.Tool == "MultiEdit") && !expanded {
+			return head
+		}
 		if (m.Tool == "Bash" || m.Tool == "PowerShell") && !expanded && lipgloss.Width(m.Detail) < width-10 && !strings.Contains(m.Detail, "\n") {
 			return head // the command is already in the header
 		}
@@ -164,6 +217,19 @@ func (a *Model) renderMessage(m core.Message, prevTool string, selected, expande
 		return strings.Join(out, "\n")
 
 	case core.KindResult:
+		if m.Diff {
+			out := []string{gutter + resultPipe + dim.Render(m.Text)}
+			if a.details || expanded {
+				lines, more := clip(m.Detail, limit(diffLines))
+				for _, l := range lines {
+					out = append(out, indent+"     "+ansi.Truncate(colorPatch(l), w-5, "…"))
+				}
+				if more > 0 {
+					out = append(out, moreLine(indent+"     ", more))
+				}
+			}
+			return strings.Join(out, "\n")
+		}
 		text := m.Detail
 		if text == "" {
 			text = m.Text
@@ -196,7 +262,34 @@ func (a *Model) renderMessage(m core.Message, prevTool string, selected, expande
 		return strings.Join(out, "\n")
 
 	case core.KindThinking:
-		return gutter + thinkStyle.Render("✻ "+m.Text)
+		head := gutter + thinkStyle.Render("✻ "+m.Text)
+		body := m.Detail
+		if body == "" {
+			return head
+		}
+		if m.Partial {
+			body += "▌"
+		}
+		wrapped := strings.Split(lipgloss.NewStyle().Width(max(w-4, 10)).Render(body), "\n")
+		n := limit(thinkLines)
+		more := 0
+		if n > 0 && len(wrapped) > n {
+			// While streaming, show the newest lines; afterwards the first.
+			if m.Partial {
+				wrapped = wrapped[len(wrapped)-n:]
+			} else {
+				more = len(wrapped) - n
+				wrapped = wrapped[:n]
+			}
+		}
+		out := []string{head}
+		for _, l := range wrapped {
+			out = append(out, indent+"    "+thinkStyle.Render(strings.TrimRight(l, " ")))
+		}
+		if more > 0 {
+			out = append(out, moreLine(indent+"    ", more))
+		}
+		return strings.Join(out, "\n")
 
 	case core.KindTurn:
 		return gutter + turnStyle.Render(ansi.Truncate("✓ "+m.Text, w-2, "…"))

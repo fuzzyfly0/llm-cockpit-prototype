@@ -58,6 +58,8 @@ type Message struct {
 	Detail string
 	// Sub marks output of a subagent.
 	Sub bool
+	// Diff marks a result whose Detail is a numbered diff (see patchFrom).
+	Diff bool
 }
 
 // Modifies reports whether the tool call changed File.
@@ -141,7 +143,8 @@ type Session struct {
 	historyLoaded bool
 	costBase      float64
 	proc          *process
-	partial       int // index of the streaming message in Messages, -1 if none
+	partial       int // index of the streaming text in Messages, -1 if none
+	partialThink  int // index of the streaming thinking block, -1 if none
 }
 
 func (s *Session) IsPinned(uuid string) bool {

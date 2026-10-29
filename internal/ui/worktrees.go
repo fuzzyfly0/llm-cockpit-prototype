@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -33,6 +34,68 @@ func (a *Model) gitAllCmd() tea.Cmd {
 func (a *Model) resetInput() {
 	a.input.SetValue("")
 	a.input.Prompt = "› "
+}
+
+// newSession starts the "new session" flow: known repositories/folders are
+// offered first so the path only has to be typed for a new place.
+func (a *Model) newSession() tea.Cmd {
+	opts := a.knownPlaces()
+	if len(opts) == 0 {
+		return a.askDir()
+	}
+	opts = append(opts, pickOption{"Anderer Ordner …", ""})
+	a.openPicker("Neue Session – wo?", opts, opts[0].value, func(v string) (string, tea.Cmd) {
+		if v == "" {
+			return "", a.askDir()
+		}
+		if repo := platform.RepoRoot(v); repo != "" {
+			a.chooseWorkspace(v, repo)
+			return "", nil
+		}
+		a.askName(v)
+		return "", nil
+	})
+	return nil
+}
+
+// knownPlaces lists the repositories (main checkouts) and plain folders of
+// all sessions, the selected session's place first.
+func (a *Model) knownPlaces() []pickOption {
+	place := func(s core.Session) string {
+		if g := a.git[s.Dir]; g.IsRepo && g.Root != "" {
+			return g.Root
+		}
+		return s.Dir
+	}
+	var opts []pickOption
+	seen := map[string]bool{}
+	add := func(p string) {
+		if k := strings.ToLower(filepath.Clean(p)); !seen[k] {
+			seen[k] = true
+			label := filepath.Base(p) + "  (" + p + ")"
+			if g := a.git[p]; g.IsRepo || platform.RepoRoot(p) != "" {
+				label = "Repo " + label
+			}
+			opts = append(opts, pickOption{label, p})
+		}
+	}
+	if s, ok := a.selected(); ok {
+		add(place(s))
+	}
+	for _, s := range a.sessions {
+		add(place(s))
+	}
+	return opts
+}
+
+// askDir asks for a folder path (prefilled with the working directory).
+func (a *Model) askDir() tea.Cmd {
+	wd, _ := os.Getwd()
+	a.focus = focusNewDir
+	a.input.Prompt = "Neue Session › Ordner: "
+	a.input.SetValue(wd)
+	a.input.CursorEnd()
+	return a.input.Focus()
 }
 
 // askName asks for the session name of a session working directly in dir.

@@ -6,6 +6,43 @@ import (
 	"time"
 )
 
+// TestLiveThinking checks that the thinking text arrives (thinking_display
+// "summarized" is requested when the process starts).
+func TestLiveThinking(t *testing.T) {
+	if os.Getenv("COCKPIT_LIVE") == "" {
+		t.Skip("set COCKPIT_LIVE=1 to run against the real claude CLI")
+	}
+	m, _ := NewManagerAt("")
+	id, err := m.Create("think", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.StopAll()
+	m.SetModel(id, "claude-haiku-5-5")
+	m.SetEffort(id, "high")
+	if err := m.Send(id, "Denk gruendlich nach: Ein Zug faehrt um 9:40 los, 2 h 35 min Fahrt plus 3 Halte zu je 4 min. Wann kommt er an? Ein Satz."); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(120 * time.Second)
+	for time.Now().Before(deadline) {
+		s, _ := m.Get(id)
+		if s.Status == StatusIdle && s.Preview() != "" {
+			for _, msg := range s.Messages {
+				if msg.Kind == KindThinking {
+					t.Logf("thinking %q: %.200q", msg.Text, msg.Detail)
+					if msg.Detail == "" || msg.Partial {
+						t.Errorf("thinking without text or still partial: %+v", msg)
+					}
+					return
+				}
+			}
+			t.Fatalf("no thinking block: %+v", s.Messages)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatal("no answer within timeout")
+}
+
 // TestLiveSession talks to the real Claude CLI. Run with COCKPIT_LIVE=1.
 func TestLiveSession(t *testing.T) {
 	if os.Getenv("COCKPIT_LIVE") == "" {

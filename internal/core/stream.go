@@ -41,6 +41,15 @@ type streamEvent struct {
 	Version        string      `json:"claude_code_version"`
 	MCPServers     []mcpServer `json:"mcp_servers"`
 	Status         *string     `json:"status"`
+	// Structured tool result (stream / transcript spelling), e.g. the
+	// structuredPatch of an Edit.
+	ToolUseResult     json.RawMessage `json:"tool_use_result"`
+	ToolUseResultTran json.RawMessage `json:"toolUseResult"`
+	// control_response to our control requests
+	Response *struct {
+		Subtype string `json:"subtype"`
+		Error   string `json:"error"`
+	} `json:"response"`
 	// rate_limit_event
 	RateLimitInfo json.RawMessage `json:"rate_limit_info"`
 	// result: per-model usage incl. the context window size
@@ -74,18 +83,20 @@ type apiEvent struct {
 	Type         string       `json:"type"`
 	ContentBlock contentBlock `json:"content_block"`
 	Delta        struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		Thinking string `json:"thinking"`
 	} `json:"delta"`
 }
 
 type contentBlock struct {
-	Type    string          `json:"type"`
-	Text    string          `json:"text"`
-	Name    string          `json:"name"`
-	Input   json.RawMessage `json:"input"`
-	Content json.RawMessage `json:"content"`
-	IsError bool            `json:"is_error"`
+	Type     string          `json:"type"`
+	Text     string          `json:"text"`
+	Thinking string          `json:"thinking"`
+	Name     string          `json:"name"`
+	Input    json.RawMessage `json:"input"`
+	Content  json.RawMessage `json:"content"`
+	IsError  bool            `json:"is_error"`
 }
 
 func (ev streamEvent) isSubagent() bool {
@@ -130,7 +141,7 @@ func messagesFrom(ev streamEvent) []Message {
 			}
 			msg.Kind, msg.Text = KindUser, b.Text
 		case b.Type == "thinking":
-			msg.Kind, msg.Text = KindThinking, "nachgedacht"
+			msg.Kind, msg.Text, msg.Detail = KindThinking, "nachgedacht", strings.TrimSpace(b.Thinking)
 			if ms := max(ev.ThinkingMS, ev.ThinkingMSTran); ms > 0 {
 				msg.Text += fmt.Sprintf(" (%.1f s)", float64(ms)/1000)
 			}
@@ -140,12 +151,73 @@ func messagesFrom(ev streamEvent) []Message {
 		case b.Type == "tool_result":
 			full := resultText(b)
 			msg.Kind, msg.Text, msg.Detail = KindResult, resultSummary(full, b.IsError), full
+			if !b.IsError {
+				if summary, diff, ok := patchFrom(ev); ok {
+					msg.Text, msg.Detail, msg.Diff = summary, diff, true
+				}
+			}
 		default:
 			continue
 		}
 		out = append(out, msg)
 	}
 	return out
+}
+
+// patchFrom renders the structuredPatch of an Edit/Write result like Claude
+// Code: line number, marker (+/-/space) and text, e.g. "   22 +  return x".
+func patchFrom(ev streamEvent) (summary, diff string, ok bool) {
+	raw := ev.ToolUseResult
+	if len(raw) == 0 {
+		raw = ev.ToolUseResultTran
+	}
+	var r struct {
+		StructuredPatch []struct {
+			OldStart int      `json:"oldStart"`
+			NewStart int      `json:"newStart"`
+			Lines    []string `json:"lines"`
+		} `json:"structuredPatch"`
+	}
+	if json.Unmarshal(raw, &r) != nil || len(r.StructuredPatch) == 0 {
+		return "", "", false
+	}
+	var lines []string
+	added, removed := 0, 0
+	for h, hunk := range r.StructuredPatch {
+		if h > 0 {
+			lines = append(lines, "  ...")
+		}
+		oldN, newN := hunk.OldStart, hunk.NewStart
+		for _, l := range hunk.Lines {
+			marker, text := " ", l
+			if l != "" {
+				marker, text = l[:1], l[1:]
+			}
+			switch marker {
+			case "+":
+				lines = append(lines, fmt.Sprintf("%5d +  %s", newN, text))
+				newN++
+				added++
+			case "-":
+				lines = append(lines, fmt.Sprintf("%5d -  %s", oldN, text))
+				oldN++
+				removed++
+			default:
+				lines = append(lines, fmt.Sprintf("%5d    %s", newN, text))
+				oldN++
+				newN++
+			}
+		}
+	}
+	summary = fmt.Sprintf("%d %s hinzugefügt, %d entfernt", added, plural(added, "Zeile", "Zeilen"), removed)
+	return summary, capText(strings.Join(lines, "\n")), true
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 func resultText(b contentBlock) string {

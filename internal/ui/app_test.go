@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
@@ -113,7 +114,7 @@ func TestMouse(t *testing.T) {
 	send(t, a, special(tea.KeyEsc))
 	// "[+ Neu]" is the first button of the bar.
 	send(t, a, click(2, barTop))
-	if a.focus != focusNewDir {
+	if a.focus != focusPick || a.pick.title != "Neue Session – wo?" {
 		t.Fatalf("click on [+ Neu]: focus=%d", a.focus)
 	}
 	send(t, a, special(tea.KeyEsc))
@@ -151,9 +152,14 @@ func TestTypingGoesToMessageField(t *testing.T) {
 	if a.focus != focusInput || a.input.Value() != "nimm die datei" || a.input.Prompt != "› " {
 		t.Fatalf("focus=%d value=%q prompt=%q", a.focus, a.input.Value(), a.input.Prompt)
 	}
-	// After esc, "n" is the shortcut again and the dialog is clearly labelled.
+	// After esc, "n" is the shortcut again: it offers the known places, the
+	// last option asks for a folder with a clearly labelled prompt.
 	send(t, a, special(tea.KeyEsc))
 	send(t, a, keys("n"))
+	if a.focus != focusPick || a.pick.options[0].value != a.cur.Dir {
+		t.Fatalf("focus=%d options=%+v", a.focus, a.pick.options)
+	}
+	run(t, a, a.choosePick(len(a.pick.options)-1)) // "Anderer Ordner …"
 	if a.focus != focusNewDir || !strings.HasPrefix(a.input.Prompt, "Neue Session") {
 		t.Fatalf("focus=%d prompt=%q", a.focus, a.input.Prompt)
 	}
@@ -211,10 +217,11 @@ func TestStreamingRender(t *testing.T) {
 	send(t, a, tea.WindowSizeMsg{Width: 100, Height: 60})
 	a.cur = core.Session{Messages: []core.Message{
 		{Kind: core.KindUser, Text: "Wie viele Dateien?"},
-		{Kind: core.KindThinking, Text: "nachgedacht (1.5 s)"},
+		{Kind: core.KindThinking, Text: "nachgedacht (1.5 s)", Detail: "Erst die Dateien zählen."},
 		{Kind: core.KindTool, Tool: "Glob", Text: "Glob *", Detail: "pattern: *"},
 		{Kind: core.KindResult, Text: "a.go (+2 Zeilen)", Detail: "a.go\nb.go\nc.go"},
 		{Kind: core.KindTool, Tool: "Edit", Text: "Edit x.go", File: "x.go", Detail: "- alt\n+ neu"},
+		{Kind: core.KindResult, Diff: true, Text: "1 Zeile hinzugefügt, 1 entfernt", Detail: "    1 -  alt\n    1 +  neu"},
 		{Kind: core.KindDenied, Text: "PowerShell go test  – vom Rechte-Modus nicht erlaubt"},
 		{Kind: core.KindTurn, Text: "fertig · 1.0 s · 2 Schritte"},
 		{Kind: core.KindAssistant, Text: "Im Ordner", Partial: true},
@@ -222,8 +229,8 @@ func TestStreamingRender(t *testing.T) {
 	a.renderMessages()
 	out := ansi.Strip(a.vp.View())
 	for _, want := range []string{
-		"> Wie viele Dateien?", "✻ nachgedacht (1.5 s)", "⏺ Glob(*)", "pattern: *",
-		"⎿  a.go", "c.go", "⏺ Update(x.go)", "- alt", "+ neu",
+		"> Wie viele Dateien?", "✻ nachgedacht (1.5 s)", "Erst die Dateien zählen.", "⏺ Glob(*)", "pattern: *",
+		"⎿  a.go", "c.go", "⏺ Update(x.go)", "⎿  1 Zeile hinzugefügt, 1 entfernt", "1 -  alt", "1 +  neu",
 		"⛔ verweigert: PowerShell go test", "✓ fertig", "⏺ Im Ordner▌",
 	} {
 		if !strings.Contains(out, want) {
@@ -308,6 +315,60 @@ func TestModelPickerAndUsage(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("usage missing %q:\n%s", want, got)
 		}
+	}
+}
+
+// Regression: the selection background was reset by styled text, so the
+// first line of a clicked entry looked unselected.
+func TestSelectionMarksEveryLine(t *testing.T) {
+	mgr, _ := core.NewManagerAt("")
+	a := New(mgr)
+	send(t, a, tea.WindowSizeMsg{Width: 80, Height: 30})
+	a.cur = core.Session{Messages: []core.Message{
+		{Kind: core.KindUser, Text: "Frage"},
+		{Kind: core.KindAssistant, UUID: "a", Text: "Erste Zeile\nZweite Zeile\nDritte Zeile"},
+	}}
+	a.focus, a.msgCursor = focusMessages, 1
+	a.renderMessages()
+	var marked []string
+	for _, l := range strings.Split(ansi.Strip(a.vp.View()), "\n") {
+		if strings.HasPrefix(l, "▌ ") {
+			marked = append(marked, l)
+		}
+	}
+	if len(marked) != 3 || !strings.Contains(marked[0], "⏺ Erste Zeile") || !strings.Contains(marked[2], "Dritte Zeile") {
+		t.Fatalf("marked lines %q", marked)
+	}
+}
+
+func TestCopyText(t *testing.T) {
+	long := strings.Repeat("zeile\n", 50) + "ende"
+	tests := []struct {
+		m    core.Message
+		want string
+	}{
+		{core.Message{Kind: core.KindAssistant, Text: "Antwort"}, "Antwort"},
+		{core.Message{Kind: core.KindTool, Tool: "Bash", Text: "Bash go test", Detail: "# Tests\n$ go test ./..."}, "go test ./..."},
+		{core.Message{Kind: core.KindResult, Text: "zeile (+50 Zeilen)", Detail: long}, long},
+		{core.Message{Kind: core.KindThinking, Text: "nachgedacht", Detail: "Gedanke"}, "Gedanke"},
+		{core.Message{Kind: core.KindTurn, Text: "fertig"}, "fertig"},
+	}
+	for _, tt := range tests {
+		if got := copyText(tt.m); got != tt.want {
+			t.Errorf("copyText(%v) = %.40q, want %.40q", tt.m.Kind, got, tt.want)
+		}
+	}
+}
+
+// Copies through the real Windows clipboard; skipped where none exists.
+func TestCopyToClipboard(t *testing.T) {
+	text := "Grüße aus dem Cockpit\nzweite Zeile"
+	if err := platform.CopyToClipboard(text); err != nil {
+		t.Skip("no clipboard:", err)
+	}
+	got, err := clipboard.ReadAll()
+	if err != nil || strings.ReplaceAll(got, "\r\n", "\n") != text {
+		t.Fatalf("clipboard %q, %v", got, err)
 	}
 }
 

@@ -183,8 +183,17 @@ func (m *Manager) start(s *Session) error {
 		return err
 	}
 	s.proc = p
-	s.partial = -1
+	s.partial, s.partialThink = -1, -1
 	s.costBase = s.CostUSD
+	// Like Claude Code, stream the (summarized) thinking text.
+	if d := cfg.ThinkingDisplay; d != "" && d != "off" {
+		req, _ := json.Marshal(map[string]any{
+			"type":       "control_request",
+			"request_id": "cockpit-thinking",
+			"request":    map[string]any{"subtype": "set_max_thinking_tokens", "thinking_display": d},
+		})
+		_, _ = stdin.Write(append(req, '\n'))
+	}
 	s.Status = StatusIdle
 	s.Activity = ""
 	go m.readLoop(s, p, stdout)
@@ -275,6 +284,11 @@ func (m *Manager) handle(s *Session, ev streamEvent) {
 		if !ev.isSubagent() {
 			m.handleStream(s, ev.Event)
 		}
+	case "control_response":
+		if ev.Response != nil && ev.Response.Subtype != "success" {
+			s.Messages = append(s.Messages, Message{Kind: KindInfo,
+				Text: "Steuerbefehl abgelehnt: " + ev.Response.Error})
+		}
 	case "rate_limit_event":
 		if l, ok := parseLimits(ev.RateLimitInfo, time.Now()); ok {
 			m.st.Limits = l
@@ -287,10 +301,16 @@ func (m *Manager) handle(s *Session, ev streamEvent) {
 			}
 		}
 		for _, msg := range messagesFrom(ev) {
+			// A complete block replaces its streamed preview.
 			if msg.Kind == KindAssistant && !msg.Sub && s.partial >= 0 && s.partial < len(s.Messages) {
-				// The complete block replaces its streamed preview.
 				s.Messages[s.partial] = msg
 				s.partial = -1
+			} else if msg.Kind == KindThinking && !msg.Sub && s.partialThink >= 0 && s.partialThink < len(s.Messages) {
+				if msg.Detail == "" {
+					msg.Detail = s.Messages[s.partialThink].Detail
+				}
+				s.Messages[s.partialThink] = msg
+				s.partialThink = -1
 			} else {
 				s.Messages = append(s.Messages, msg)
 			}
@@ -307,10 +327,12 @@ func (m *Manager) handle(s *Session, ev streamEvent) {
 			}
 		}
 	case "result":
-		if s.partial >= 0 && s.partial < len(s.Messages) {
-			s.Messages[s.partial].Partial = false
+		for _, i := range []int{s.partial, s.partialThink} {
+			if i >= 0 && i < len(s.Messages) {
+				s.Messages[i].Partial = false
+			}
 		}
-		s.partial = -1
+		s.partial, s.partialThink = -1, -1
 		s.Status = StatusIdle
 		s.Activity = ""
 		s.Unread = true
@@ -348,13 +370,18 @@ func (m *Manager) handleStream(s *Session, e *apiEvent) {
 			s.partial = len(s.Messages) - 1
 			s.Activity = "schreibt…"
 		case "thinking":
+			s.Messages = append(s.Messages, Message{Kind: KindThinking, Text: "denkt…", Partial: true})
+			s.partialThink = len(s.Messages) - 1
 			s.Activity = "💭 denkt…"
 		case "tool_use":
 			s.Activity = "⚙ " + e.ContentBlock.Name + "…"
 		}
 	case "content_block_delta":
-		if e.Delta.Type == "text_delta" && s.partial >= 0 && s.partial < len(s.Messages) {
+		switch {
+		case e.Delta.Type == "text_delta" && s.partial >= 0 && s.partial < len(s.Messages):
 			s.Messages[s.partial].Text += e.Delta.Text
+		case e.Delta.Type == "thinking_delta" && s.partialThink >= 0 && s.partialThink < len(s.Messages):
+			s.Messages[s.partialThink].Detail += e.Delta.Thinking
 		}
 	}
 }

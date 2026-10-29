@@ -70,6 +70,44 @@ func TestMessagesFrom(t *testing.T) {
 	}
 }
 
+// Edit results carry a structuredPatch that becomes a numbered diff.
+func TestEditResultBecomesNumberedDiff(t *testing.T) {
+	ev := parse(t, `{"type":"user","uuid":"r1","message":{"content":[{"type":"tool_result","content":"The file x.go has been updated."}]},
+		"tool_use_result":{"structuredPatch":[{"oldStart":21,"newStart":21,"lines":[" func Total() {","-\treturn 0","+\tsum := 0","+\treturn sum"," }"]}]}}`)
+	msgs := messagesFrom(ev)
+	if len(msgs) != 1 || !msgs[0].Diff {
+		t.Fatalf("got %+v", msgs)
+	}
+	if msgs[0].Text != "2 Zeilen hinzugefügt, 1 entfernt" {
+		t.Errorf("summary %q", msgs[0].Text)
+	}
+	want := "   21    func Total() {\n   22 -  \treturn 0\n   22 +  \tsum := 0\n   23 +  \treturn sum\n   24    }"
+	if msgs[0].Detail != want {
+		t.Errorf("diff:\n%s\nwant:\n%s", msgs[0].Detail, want)
+	}
+}
+
+// Recorded sequence with thinking_display "summarized".
+func TestThinkingIsStreamed(t *testing.T) {
+	m := &Manager{st: &state{}}
+	s := &Session{partial: -1, partialThink: -1}
+	for _, line := range []string{
+		`{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"thinking","thinking":""}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"Working through "}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"the arithmetic"}}}`,
+	} {
+		m.handle(s, parse(t, line))
+	}
+	if len(s.Messages) != 1 || s.Messages[0].Detail != "Working through the arithmetic" || !s.Messages[0].Partial {
+		t.Fatalf("while thinking: %+v", s.Messages)
+	}
+	m.handle(s, parse(t, `{"type":"assistant","uuid":"t1","thinking_duration_ms":2500,"message":{"content":[{"type":"thinking","thinking":"Working through the arithmetic: 11:27."}]}}`))
+	got := s.Messages[0]
+	if len(s.Messages) != 1 || got.Partial || got.Text != "nachgedacht (2.5 s)" || got.Detail != "Working through the arithmetic: 11:27." {
+		t.Fatalf("after block: %+v", s.Messages)
+	}
+}
+
 // The result event of a turn adds denials and a summary line.
 func TestResultAddsSummaryAndDenials(t *testing.T) {
 	m := &Manager{st: &state{}}
@@ -113,7 +151,7 @@ func TestLoadStateFillsEmptyConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Config{ClaudeBin: "claude", PermissionMode: "acceptEdits", IDE: "code"}
+	want := Config{ClaudeBin: "claude", PermissionMode: "acceptEdits", IDE: "code", ThinkingDisplay: "summarized"}
 	if !reflect.DeepEqual(st.Config, want) {
 		t.Fatalf("got %+v, want %+v", st.Config, want)
 	}
