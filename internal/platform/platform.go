@@ -219,6 +219,15 @@ func WebURL(remote string) string {
 	return ""
 }
 
+// SessionURL builds the configured session link: {name} is replaced by the
+// session name, otherwise the name is appended.
+func SessionURL(template, name string) string {
+	if strings.Contains(template, "{name}") {
+		return strings.ReplaceAll(template, "{name}", url.PathEscape(name))
+	}
+	return template + url.PathEscape(name)
+}
+
 func GitHubSearchURL(q string) string {
 	return "https://github.com/search?type=repositories&q=" + url.QueryEscape(q)
 }

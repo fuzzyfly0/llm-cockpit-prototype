@@ -23,6 +23,16 @@ func keys(s string) tea.KeyMsg {
 
 func special(t tea.KeyType) tea.KeyMsg { return tea.KeyMsg{Type: t} }
 
+func alt(r rune) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}, Alt: true} }
+
+// typeText sends text key by key, like a user typing.
+func typeText(t *testing.T, a *Model, text string) {
+	t.Helper()
+	for _, r := range text {
+		send(t, a, keys(string(r)))
+	}
+}
+
 // send runs one Update with a timeout so a deadlock fails the test instead
 // of hanging it.
 func send(t *testing.T, a *Model, msg tea.Msg) {
@@ -37,6 +47,22 @@ func send(t *testing.T, a *Model, msg tea.Msg) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("Update(%v) hung", msg)
 	}
+}
+
+// newWith creates a model with stopped sessions in temporary folders.
+func newWith(t *testing.T, w, h int, names ...string) (*Model, *core.Manager) {
+	t.Helper()
+	mgr, _ := core.NewManagerAt("")
+	for _, n := range names {
+		if _, err := mgr.Create(n, t.TempDir()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mgr.StopAll()
+	t.Cleanup(mgr.StopAll)
+	a := New(mgr)
+	send(t, a, tea.WindowSizeMsg{Width: w, Height: h})
+	return a, mgr
 }
 
 // Restart with a persisted session: the UI must stay responsive.
@@ -56,7 +82,7 @@ func TestRestartWithSavedSession(t *testing.T) {
 	a := New(mgr)
 	send(t, a, a.Init()) // returns a batch cmd; executing it is not needed
 	send(t, a, tea.WindowSizeMsg{Width: 100, Height: 25})
-	for _, k := range []tea.Msg{keys("j"), keys("k"), special(tea.KeyTab), keys("?"), special(tea.KeyEsc), special(tea.KeyEnter)} {
+	for _, k := range []tea.Msg{special(tea.KeyTab), special(tea.KeyDown), special(tea.KeyEsc), keys("?"), special(tea.KeyEsc)} {
 		send(t, a, k)
 	}
 	if len(a.sessions) != 1 || a.focus != focusInput {
@@ -72,19 +98,7 @@ func click(x, y int) tea.MouseMsg {
 }
 
 func TestMouse(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.json")
-	setup, _ := core.NewManagerAt(path)
-	for _, name := range []string{"eins", "zwei"} {
-		if _, err := setup.Create(name, t.TempDir()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	setup.StopAll()
-
-	mgr, _ := core.NewManagerAt(path)
-	defer mgr.StopAll()
-	a := New(mgr)
-	send(t, a, tea.WindowSizeMsg{Width: 140, Height: 30})
+	a, _ := newWith(t, 140, 30, "eins", "zwei")
 	run(t, a, a.gitAllCmd()) // both folders are no git repos: one group
 	a.View()
 
@@ -98,64 +112,61 @@ func TestMouse(t *testing.T) {
 		t.Fatalf("click on header changed selection to %d", a.sel)
 	}
 	send(t, a, click(5, 4))
-	if a.sel != 1 || a.cur.Name != "zwei" {
-		t.Fatalf("click on session: sel=%d cur=%q", a.sel, a.cur.Name)
+	if a.sel != 1 || a.cur.Name != "zwei" || a.focus != focusInput {
+		t.Fatalf("click on session: sel=%d cur=%q focus=%d", a.sel, a.cur.Name, a.focus)
 	}
 	send(t, a, tea.MouseMsg{X: 5, Y: 3, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelUp})
 	if a.sel != 0 {
 		t.Fatalf("wheel up over list: sel=%d", a.sel)
 	}
-	// Click into the input box.
-	barTop := a.bodyHeight() + 5
-	send(t, a, click(10, barTop-2))
-	if a.focus != focusInput {
-		t.Fatalf("click on input: focus=%d", a.focus)
+	// Tabs in the first row of the right panel.
+	a.View()
+	x := leftW + 3 + a.tabX[1][0] + 1
+	send(t, a, click(x, 1))
+	if a.tab != tabFiles {
+		t.Fatalf("click on tab Dateien: tab=%d", a.tab)
 	}
-	send(t, a, special(tea.KeyEsc))
-	// "[+ Neu]" is the first button of the bar.
-	send(t, a, click(2, barTop))
-	if a.focus != focusPick || a.pick.title != "Neue Session – wo?" {
-		t.Fatalf("click on [+ Neu]: focus=%d", a.focus)
+	send(t, a, click(leftW+3+a.tabX[0][0]+1, 1))
+	if a.tab != tabHistory || a.focus != focusInput {
+		t.Fatalf("click on tab Verlauf: tab=%d focus=%d", a.tab, a.focus)
 	}
-	send(t, a, special(tea.KeyEsc))
-	// Every button must be visible and clickable, also "[?]" at the end.
-	view := strings.Split(ansiStrip(a.View()), "\n")
-	if len(view) != 30 {
-		t.Fatalf("view has %d rows, want 30", len(view))
+	// The hint line at the bottom opens the command list.
+	send(t, a, click(3, 29))
+	if !a.paletteOpen() {
+		t.Fatalf("click on hint line: palette closed, input %q", a.input.Value())
 	}
-	found := false
-	for r := barTop; r < len(view); r++ {
-		if x := strings.Index(view[r], "[?]"); x >= 0 {
-			send(t, a, click(x+1, r))
-			found = true
-		}
-	}
-	if !found || a.focus != focusOverlay {
-		t.Fatalf("[?] not found or not clickable (found=%v focus=%d)", found, a.focus)
+	if rows := strings.Split(ansiStrip(a.View()), "\n"); len(rows) != 30 {
+		t.Fatalf("view has %d rows, want 30", len(rows))
 	}
 }
 
 // Regression: typing a message that starts with "n" opened the new-session
-// dialog ("Ordner: …") because the session list had focus.
+// dialog. Now typing always lands in the message field – also when the
+// session list or the history has the focus.
 func TestTypingGoesToMessageField(t *testing.T) {
-	mgr, _ := core.NewManagerAt("")
-	if _, err := mgr.Create("tippen", t.TempDir()); err != nil {
-		t.Fatal(err)
-	}
-	mgr.StopAll()
-	a := New(mgr)
-	send(t, a, tea.WindowSizeMsg{Width: 120, Height: 30})
+	a, _ := newWith(t, 120, 30, "tippen")
 	if a.focus != focusInput {
 		t.Fatalf("start focus=%d, want message field", a.focus)
 	}
-	send(t, a, keys("nimm die datei"))
+	typeText(t, a, "nimm die datei")
 	if a.focus != focusInput || a.input.Value() != "nimm die datei" || a.input.Prompt != "› " {
 		t.Fatalf("focus=%d value=%q prompt=%q", a.focus, a.input.Value(), a.input.Prompt)
 	}
-	// After esc, "n" is the shortcut again: it offers the known places, the
-	// last option asks for a folder with a clearly labelled prompt.
-	send(t, a, special(tea.KeyEsc))
-	send(t, a, keys("n"))
+	send(t, a, special(tea.KeyEsc)) // esc clears the text
+	if a.input.Value() != "" {
+		t.Fatalf("esc did not clear: %q", a.input.Value())
+	}
+	// In the session list, a letter without a meaning there is typed.
+	send(t, a, special(tea.KeyShiftTab))
+	if a.focus != focusList {
+		t.Fatalf("shift+tab: focus=%d", a.focus)
+	}
+	typeText(t, a, "neu")
+	if a.focus != focusInput || a.input.Value() != "neu" {
+		t.Fatalf("redirect: focus=%d value=%q", a.focus, a.input.Value())
+	}
+	// ctrl+n offers the known places; the last option asks for a folder.
+	send(t, a, tea.KeyMsg{Type: tea.KeyCtrlN})
 	if a.focus != focusPick || a.pick.options[0].value != a.cur.Dir {
 		t.Fatalf("focus=%d options=%+v", a.focus, a.pick.options)
 	}
@@ -164,23 +175,163 @@ func TestTypingGoesToMessageField(t *testing.T) {
 		t.Fatalf("focus=%d prompt=%q", a.focus, a.input.Prompt)
 	}
 	send(t, a, special(tea.KeyEsc))
-	if a.input.Prompt != "› " {
-		t.Fatalf("prompt after esc: %q", a.input.Prompt)
+	if a.input.Prompt != "› " || a.focus != focusInput {
+		t.Fatalf("after esc: prompt=%q focus=%d", a.input.Prompt, a.focus)
 	}
 }
 
-func TestButtonBarWrapsOnNarrowScreens(t *testing.T) {
-	mgr, _ := core.NewManagerAt("")
-	a := New(mgr)
-	send(t, a, tea.WindowSizeMsg{Width: 80, Height: 30})
-	out := ansiStrip(a.View())
-	if rows := strings.Split(out, "\n"); len(rows) != 30 {
+func TestCommandPalette(t *testing.T) {
+	a, mgr := newWith(t, 140, 40, "palette")
+	send(t, a, keys("/"))
+	if !a.paletteOpen() || !strings.Contains(ansiStrip(a.View()), "/neu") {
+		t.Fatal("palette not shown after /")
+	}
+	typeText(t, a, "modell")
+	if m := a.paletteMatches(); len(m) != 1 || m[0].name != "modell" {
+		t.Fatalf("filter: %+v", m)
+	}
+	send(t, a, special(tea.KeyEnter))
+	if a.focus != focusPick || a.input.Value() != "" {
+		t.Fatalf("modell: focus=%d input=%q", a.focus, a.input.Value())
+	}
+	for i := 0; i < 3; i++ {
+		send(t, a, special(tea.KeyDown))
+	}
+	send(t, a, special(tea.KeyEnter)) // Haiku
+	if s, _ := mgr.Get(a.cur.ID); s.Model != "claude-haiku-5-5" {
+		t.Fatalf("model %q status %q", s.Model, a.status)
+	}
+	// ctrl+p opens the list too, esc closes it.
+	send(t, a, tea.KeyMsg{Type: tea.KeyCtrlP})
+	if !a.paletteOpen() {
+		t.Fatal("ctrl+p")
+	}
+	send(t, a, special(tea.KeyEsc))
+	if a.paletteOpen() || a.input.Value() != "" {
+		t.Fatal("esc did not close the palette")
+	}
+	// "?" in the empty field shows the help.
+	send(t, a, keys("?"))
+	if a.focus != focusOverlay || !strings.Contains(a.overlayRaw, "ctrl+k") {
+		t.Fatalf("help: focus=%d", a.focus)
+	}
+	send(t, a, special(tea.KeyEsc))
+	if a.focus != focusInput {
+		t.Fatalf("after help: focus=%d", a.focus)
+	}
+}
+
+func TestSessionSwitcher(t *testing.T) {
+	a, _ := newWith(t, 140, 40, "login-fix", "export", "warenkorb")
+	typeText(t, a, "Entwurf")
+	send(t, a, tea.KeyMsg{Type: tea.KeyCtrlK})
+	if !a.switching || a.input.Value() != "" {
+		t.Fatalf("switcher: %v %q", a.switching, a.input.Value())
+	}
+	typeText(t, a, "export")
+	if m := a.switchMatches(); len(m) != 1 || a.sessions[m[0]].Name != "export" {
+		t.Fatalf("matches %v", m)
+	}
+	send(t, a, special(tea.KeyEnter))
+	if a.switching || a.cur.Name != "export" || a.input.Value() != "Entwurf" {
+		t.Fatalf("after switch: %v %q draft=%q", a.switching, a.cur.Name, a.input.Value())
+	}
+	// alt+↑ / alt+↓ step through the sessions.
+	send(t, a, tea.KeyMsg{Type: tea.KeyUp, Alt: true})
+	if a.cur.Name != "login-fix" {
+		t.Fatalf("alt+up: %q", a.cur.Name)
+	}
+}
+
+func TestMultiLineInputAndHistory(t *testing.T) {
+	a, _ := newWith(t, 120, 30, "zeilen")
+	typeText(t, a, "erste")
+	send(t, a, tea.KeyMsg{Type: tea.KeyEnter, Alt: true}) // alt+enter
+	typeText(t, a, "zweite\\")
+	send(t, a, special(tea.KeyEnter)) // trailing backslash → new line
+	typeText(t, a, "dritte")
+	if got := a.input.Value(); got != "erste\nzweite\ndritte" {
+		t.Fatalf("value %q", got)
+	}
+	if a.input.Height() != 3 {
+		t.Fatalf("field height %d, want 3", a.input.Height())
+	}
+	if rows := strings.Split(ansiStrip(a.View()), "\n"); len(rows) != 30 {
 		t.Fatalf("view has %d rows, want 30", len(rows))
 	}
-	for _, b := range a.buttons() {
-		if !strings.Contains(out, "["+b.label+"]") {
-			t.Errorf("button %q not visible at width 80", b.label)
+	// ↑ in the empty field brings back earlier prompts.
+	a.cur.Messages = []core.Message{{Kind: core.KindUser, Text: "alt 1"}, {Kind: core.KindUser, Text: "alt 2"}}
+	a.input.SetValue("")
+	send(t, a, special(tea.KeyUp))
+	if a.input.Value() != "alt 2" {
+		t.Fatalf("history: %q", a.input.Value())
+	}
+	send(t, a, special(tea.KeyUp))
+	send(t, a, special(tea.KeyDown))
+	send(t, a, special(tea.KeyDown))
+	if a.input.Value() != "" {
+		t.Fatalf("history end: %q", a.input.Value())
+	}
+}
+
+func TestCtrlCClearsThenQuits(t *testing.T) {
+	a, _ := newWith(t, 120, 30, "beenden")
+	typeText(t, a, "text")
+	_, cmd := a.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if a.input.Value() != "" || cmd != nil {
+		t.Fatalf("first ctrl+c should only clear: %q", a.input.Value())
+	}
+	_, cmd = a.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd != nil || !strings.Contains(a.status, "Nochmal ctrl+c") {
+		t.Fatalf("second ctrl+c should arm: %q", a.status)
+	}
+	_, cmd = a.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("third ctrl+c should quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("not a quit command")
+	}
+}
+
+func TestTabsWithAltNumbers(t *testing.T) {
+	a, mgr := newWith(t, 120, 30, "reiter")
+	send(t, a, alt('3'))
+	if a.tab != tabNotes || a.focus != focusNotes {
+		t.Fatalf("alt+3: tab=%d focus=%d", a.tab, a.focus)
+	}
+	typeText(t, a, "Notiz")
+	send(t, a, special(tea.KeyEsc)) // saves and returns
+	if s, _ := mgr.Get(a.cur.ID); s.Notes != "Notiz" || a.focus != focusInput || a.tab != tabHistory {
+		t.Fatalf("notes %q focus=%d tab=%d", s.Notes, a.focus, a.tab)
+	}
+	if !strings.Contains(ansiStrip(a.View()), "Notizen ✎") {
+		t.Fatal("notes marker missing in the tab bar")
+	}
+	send(t, a, alt('4'))
+	if a.tab != tabPins || !strings.Contains(ansiStrip(a.View()), "Noch keine Pins") {
+		t.Fatalf("alt+4: tab=%d", a.tab)
+	}
+}
+
+func TestHintLineAndHeight(t *testing.T) {
+	for _, w := range []int{80, 140} {
+		a, _ := newWith(t, w, 30, "hinweis")
+		rows := strings.Split(ansiStrip(a.View()), "\n")
+		if len(rows) != 30 {
+			t.Fatalf("width %d: view has %d rows", w, len(rows))
 		}
+		if last := rows[len(rows)-1]; !strings.Contains(last, "enter senden") {
+			t.Fatalf("width %d: hint line %q", w, last)
+		}
+	}
+}
+
+func TestSessionLink(t *testing.T) {
+	a, _ := newWith(t, 120, 30, "PROJ-123")
+	a.runAction("link")
+	if !strings.Contains(a.status, "kein Link konfiguriert") {
+		t.Fatalf("status %q", a.status)
 	}
 }
 
@@ -202,7 +353,7 @@ func TestCursorFile(t *testing.T) {
 		t.Fatalf("got %q %v, want %q", f, ok, want)
 	}
 	a.renderMessages()
-	if !strings.Contains(a.vp.View(), "[c] IDE · [f] Diff") {
+	if !strings.Contains(a.vp.View(), "[o] IDE · [d] Diff") {
 		t.Errorf("hint missing:\n%s", a.vp.View())
 	}
 	a.msgCursor = 1
@@ -286,8 +437,7 @@ func TestModelPickerAndUsage(t *testing.T) {
 	defer mgr.StopAll()
 	a := New(mgr)
 	send(t, a, tea.WindowSizeMsg{Width: 140, Height: 40})
-	send(t, a, special(tea.KeyEsc)) // leave the message field for shortcuts
-	send(t, a, keys("M"))
+	a.runAction("M")
 	if a.focus != focusPick || !strings.Contains(ansi.Strip(a.View()), "Haiku 5.5") {
 		t.Fatalf("picker not shown, focus=%d", a.focus)
 	}
@@ -399,8 +549,8 @@ func TestViewCycleWithOneKey(t *testing.T) {
 		if a.viewName() != st.name || !strings.Contains(out, st.mustHave) || strings.Contains(out, st.mustNot) {
 			t.Fatalf("step %d: view=%s\n%s", i, a.viewName(), out)
 		}
-		if !strings.Contains(ansiStrip(a.renderButtons()), "[Ansicht: "+st.name+"]") {
-			t.Fatalf("button does not show %q", st.name)
+		if i > 0 && !strings.Contains(a.status, "Ansicht: "+st.name) {
+			t.Fatalf("status does not show %q: %q", st.name, a.status)
 		}
 	}
 }
@@ -415,8 +565,7 @@ func TestCopyNotes(t *testing.T) {
 	mgr.SetNotes(id, "Zeile 1\nZeile 2")
 	a := New(mgr)
 	send(t, a, tea.WindowSizeMsg{Width: 120, Height: 30})
-	send(t, a, special(tea.KeyEsc))
-	send(t, a, keys("o"))
+	send(t, a, alt('3'))
 	send(t, a, tea.KeyMsg{Type: tea.KeyCtrlY})
 	if a.focus != focusNotes {
 		t.Fatalf("ctrl+y left the editor: focus=%d", a.focus)
@@ -531,8 +680,8 @@ func TestWorktreeSessionFlow(t *testing.T) {
 	a := New(mgr)
 	send(t, a, tea.WindowSizeMsg{Width: 140, Height: 40})
 
-	// n, folder of the repo → choice "direkt / neuer Worktree / …".
-	send(t, a, keys("n"))
+	// ctrl+n, folder of the repo → choice "direkt / neuer Worktree / …".
+	send(t, a, tea.KeyMsg{Type: tea.KeyCtrlN})
 	a.input.SetValue(repo)
 	send(t, a, special(tea.KeyEnter))
 	if a.focus != focusPick || a.pick.options[1].value != "new" {
@@ -555,11 +704,9 @@ func TestWorktreeSessionFlow(t *testing.T) {
 	}
 
 	// A second session directly in the repo lands in the same group.
-	send(t, a, special(tea.KeyEsc))
-	send(t, a, keys("n"))
-	a.input.SetValue(repo)
-	send(t, a, special(tea.KeyEnter))
-	run(t, a, a.choosePick(0)) // direkt im Ordner
+	send(t, a, tea.KeyMsg{Type: tea.KeyCtrlN})
+	send(t, a, special(tea.KeyEnter)) // the repo is offered as known place
+	run(t, a, a.choosePick(0))        // direkt im Ordner
 	_, cmd = a.handleKey(special(tea.KeyEnter))
 	run(t, a, cmd)
 	groups := a.groups()
@@ -572,10 +719,10 @@ func TestWorktreeSessionFlow(t *testing.T) {
 	}
 
 	// Remove the worktree session together with its worktree.
-	send(t, a, special(tea.KeyEsc))
 	a.sel = 0
 	a.refresh()
-	send(t, a, tea.KeyMsg{Type: tea.KeyCtrlD})
+	a.focus = focusList
+	send(t, a, special(tea.KeyDelete))
 	if a.focus != focusPick || a.pick.options[1].value != "delete" {
 		t.Fatalf("no removal choice: focus=%d", a.focus)
 	}
@@ -616,7 +763,7 @@ func TestFileView(t *testing.T) {
 		t.Fatalf("after expand: %d rows", len(a.files.rows))
 	}
 	send(t, a, keys("j"))
-	_, cmd = a.handleFilesKey("enter") // preview src/main.go
+	_, cmd = a.handleFilesKey(special(tea.KeyEnter)) // preview src/main.go
 	run(t, a, cmd)
 	if a.focus != focusOverlay || !strings.Contains(a.overlay.View(), "package main") {
 		t.Fatalf("preview not shown: focus=%d\n%s", a.focus, a.overlay.View())
@@ -652,8 +799,8 @@ func TestFileView(t *testing.T) {
 		t.Fatalf("only changed: %d rows", len(a.files.rows))
 	}
 	send(t, a, special(tea.KeyEsc))
-	if a.focus != focusList {
-		t.Fatalf("esc should leave files, focus=%d", a.focus)
+	if a.focus != focusInput || a.tab != tabHistory {
+		t.Fatalf("esc should leave files, focus=%d tab=%d", a.focus, a.tab)
 	}
 }
 
@@ -664,7 +811,7 @@ func TestCreateSessionFlow(t *testing.T) {
 	send(t, a, tea.WindowSizeMsg{Width: 120, Height: 30})
 
 	dir := t.TempDir()
-	send(t, a, keys("n"))
+	send(t, a, tea.KeyMsg{Type: tea.KeyCtrlN})
 	a.input.SetValue(dir)
 	send(t, a, special(tea.KeyEnter))
 	if a.focus != focusNewName {
@@ -687,11 +834,11 @@ func TestCreateSessionFlow(t *testing.T) {
 		t.Errorf("view height %d, want 30", h)
 	}
 
-	// esc back to the list, navigate, open help, close it.
-	for _, k := range []tea.Msg{special(tea.KeyEsc), keys("j"), keys("k"), keys("?"), special(tea.KeyEsc), keys("o"), special(tea.KeyEsc)} {
+	// To the list and back, help and close it.
+	for _, k := range []tea.Msg{special(tea.KeyShiftTab), special(tea.KeyDown), special(tea.KeyUp), special(tea.KeyEsc), keys("?"), special(tea.KeyEsc)} {
 		send(t, a, k)
 	}
-	if a.focus != focusList {
-		t.Fatalf("expected list focus, got %d", a.focus)
+	if a.focus != focusInput {
+		t.Fatalf("expected input focus, got %d", a.focus)
 	}
 }

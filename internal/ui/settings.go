@@ -67,7 +67,7 @@ func (a *Model) choosePick(i int) tea.Cmd {
 		return nil
 	}
 	p := a.pick
-	a.focus = focusList
+	a.focus = focusInput
 	msg, cmd := p.apply(p.options[i].value)
 	if msg != "" {
 		a.status = msg
@@ -86,7 +86,7 @@ func (a *Model) settingApply(title string, opts []pickOption, set func(string) s
 func (a *Model) handlePickKey(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "esc", "q":
-		a.focus = focusList
+		a.focus = focusInput
 	case "up", "k":
 		a.pick.sel = max(a.pick.sel-1, 0)
 	case "down", "j":

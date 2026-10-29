@@ -191,7 +191,7 @@ func (a *Model) renderMessage(m core.Message, prevTool string, selected, expande
 		}
 		head = ansi.Truncate(head, width, "…")
 		if selected && m.File != "" {
-			head += dim.Render("  [c] IDE · [f] Diff")
+			head += dim.Render("  [o] IDE · [d] Diff")
 		}
 		// Short reads and searches need no body; everything else shows its input.
 		showBody := a.details || expanded || m.Tool == "TodoWrite"

@@ -192,7 +192,7 @@ func (a *Model) newWorktreeEntered(name string) tea.Cmd {
 		return nil
 	}
 	a.resetInput()
-	a.focus = focusList
+	a.focus = focusInput
 	base := platform.DefaultBase(a.newRepo)
 	a.status = fmt.Sprintf("lege Worktree %s an (Branch %s ab %s)…", branch, branch, base)
 	return addWorktreeCmd(a.newRepo, branch, branch, base)

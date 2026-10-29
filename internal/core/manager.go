@@ -411,6 +411,29 @@ func (m *Manager) Send(id, text string) error {
 	return nil
 }
 
+// Interrupt asks a working session to stop its current turn (like esc in
+// Claude Code). The process keeps running and waits for the next message.
+func (m *Manager) Interrupt(id string) bool {
+	m.mu.Lock()
+	defer m.changed()
+	defer m.mu.Unlock()
+	s := m.find(id)
+	if s == nil || s.proc == nil || s.Status != StatusWorking {
+		return false
+	}
+	req, _ := json.Marshal(map[string]any{
+		"type":       "control_request",
+		"request_id": fmt.Sprintf("cockpit-interrupt-%d", time.Now().UnixNano()),
+		"request":    map[string]any{"subtype": "interrupt"},
+	})
+	if _, err := s.proc.stdin.Write(append(req, '\n')); err != nil {
+		return false
+	}
+	s.Messages = append(s.Messages, Message{Kind: KindInfo, Text: "⏹ unterbrochen"})
+	s.Activity = "wird unterbrochen…"
+	return true
+}
+
 func (m *Manager) Stop(id string) {
 	m.mu.Lock()
 	if s := m.find(id); s != nil {

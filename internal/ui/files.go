@@ -146,6 +146,8 @@ func (a *Model) openFiles() tea.Cmd {
 	if a.files.dir != s.Dir {
 		a.files = fileView{dir: s.Dir, expanded: map[string]bool{}}
 	}
+	a.tab = tabFiles
+	a.input.Blur()
 	a.focus = focusFiles
 	return filesCmd(s.Dir)
 }
@@ -180,7 +182,9 @@ func (a *Model) applyFiles(msg filesMsg) {
 	a.files.rebuild()
 }
 
-func (a *Model) filesHeight() int { return max(a.bodyHeight()-1, 1) }
+// filesHeight is the number of file rows: the panel minus tab bar, info
+// line and the file view's own title line.
+func (a *Model) filesHeight() int { return max(a.bodyHeight()-3, 1) }
 
 func (a *Model) renderFiles(w int) string {
 	v := &a.files
@@ -245,12 +249,11 @@ func renderFileRow(r fileRow, expanded map[string]bool, onlyChanged, selected bo
 	return line
 }
 
-func (a *Model) handleFilesKey(key string) (tea.Model, tea.Cmd) {
+func (a *Model) handleFilesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
 	v := &a.files
 	n, ok := v.current()
 	switch key {
-	case "esc", "q", "d":
-		a.focus = focusList
 	case "up", "k":
 		v.sel = max(v.sel-1, 0)
 	case "down", "j":
@@ -290,30 +293,17 @@ func (a *Model) handleFilesKey(key string) (tea.Model, tea.Cmd) {
 		}
 	case "enter", " ":
 		return a, a.activateFile()
-	case "c":
+	case "o": // same keys as in the history: o opens, d diffs in the IDE
 		if ok {
 			a.report(platform.OpenIDE(a.mgr.Config().IDE, v.dir, a.absPath(n.path)), "In IDE geöffnet: "+n.path)
 		}
-	case "e":
-		if ok {
-			dir := a.absPath(n.path)
-			if !n.dir {
-				dir = filepath.Dir(dir)
-			}
-			a.report(platform.OpenFolder(dir), "Explorer geöffnet")
-		}
-	case "f":
+	case "d":
 		if ok && !n.dir {
 			a.report(platform.OpenIDEDiff(a.mgr.Config().IDE, v.dir, a.absPath(n.path)), "Diff in der IDE: "+n.path)
 		}
-	case "F":
-		if ok && !n.dir {
-			dir, rel := v.dir, n.path
-			a.overlayBack = focusFiles
-			return a, func() tea.Msg {
-				out, err := platform.GitDiffFile(dir, rel)
-				return overlayMsg{"git diff – " + rel, withErr(out, err), ""}
-			}
+	default:
+		if isPrintable(msg) {
+			return a.toInput(msg)
 		}
 	}
 	return a, nil

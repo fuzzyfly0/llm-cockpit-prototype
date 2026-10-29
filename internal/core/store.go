@@ -17,6 +17,9 @@ type Config struct {
 	// ThinkingDisplay asks Claude to stream its thinking: "summarized"
 	// (default, like Claude Code), "omitted" or "off" (don't ask).
 	ThinkingDisplay string `json:"thinking_display,omitempty"`
+	// SessionLink is opened with /link: the session name is appended, or
+	// replaces {name}, e.g. "https://firma.atlassian.net/browse/".
+	SessionLink string `json:"session_link,omitempty"`
 }
 
 type state struct {
