@@ -40,6 +40,7 @@ type streamEvent struct {
 	PermissionMode string      `json:"permissionMode"`
 	Version        string      `json:"claude_code_version"`
 	MCPServers     []mcpServer `json:"mcp_servers"`
+	SlashCommands  []string    `json:"slash_commands"`
 	Status         *string     `json:"status"`
 	// Structured tool result (stream / transcript spelling), e.g. the
 	// structuredPatch of an Edit.
@@ -141,7 +142,7 @@ func messagesFrom(ev streamEvent) []Message {
 			}
 			msg.Kind, msg.Text = KindUser, b.Text
 		case b.Type == "thinking":
-			msg.Kind, msg.Text, msg.Detail = KindThinking, "nachgedacht", strings.TrimSpace(b.Thinking)
+			msg.Kind, msg.Text, msg.Detail = KindThinking, "thought", strings.TrimSpace(b.Thinking)
 			if ms := max(ev.ThinkingMS, ev.ThinkingMSTran); ms > 0 {
 				msg.Text += fmt.Sprintf(" (%.1f s)", float64(ms)/1000)
 			}
@@ -209,7 +210,7 @@ func patchFrom(ev streamEvent) (summary, diff string, ok bool) {
 			}
 		}
 	}
-	summary = fmt.Sprintf("%d %s hinzugefügt, %d entfernt", added, plural(added, "Zeile", "Zeilen"), removed)
+	summary = fmt.Sprintf("%d %s added, %d removed", added, plural(added, "line", "lines"), removed)
 	return summary, capText(strings.Join(lines, "\n")), true
 }
 
@@ -240,7 +241,7 @@ func resultText(b contentBlock) string {
 
 func capText(s string) string {
 	if len(s) > maxDetail {
-		return s[:maxDetail] + "\n… (gekürzt)"
+		return s[:maxDetail] + "\n… (truncated)"
 	}
 	return s
 }
@@ -250,10 +251,10 @@ func resultSummary(text string, isError bool) string {
 	lines := strings.Split(strings.TrimSpace(text), "\n")
 	s := excerpt(lines[0], 100)
 	if len(lines) > 1 {
-		s += fmt.Sprintf(" (+%d Zeilen)", len(lines)-1)
+		s += fmt.Sprintf(" (+%d lines)", len(lines)-1)
 	}
 	if isError {
-		s = "Fehler: " + s
+		s = "Error: " + s
 	}
 	if s == "" {
 		s = "(leer)"
@@ -322,7 +323,7 @@ func toolDetail(b contentBlock) string {
 			em, _ := e.(map[string]any)
 			o, _ := em["old_string"].(string)
 			n, _ := em["new_string"].(string)
-			parts = append(parts, fmt.Sprintf("Änderung %d:\n%s\n%s", i+1, prefixed("- ", o), prefixed("+ ", n)))
+			parts = append(parts, fmt.Sprintf("Change %d:\n%s\n%s", i+1, prefixed("- ", o), prefixed("+ ", n)))
 		}
 		d = strings.Join(parts, "\n")
 	case "Write":
@@ -371,15 +372,15 @@ func formatInput(in map[string]any) string {
 func turnSummary(ev streamEvent) string {
 	u := ev.Usage
 	in := u.InputTokens + u.CacheCreation + u.CacheRead
-	s := fmt.Sprintf("fertig · %.1f s · %d Schritte · %s Tokens rein · %s raus",
+	s := fmt.Sprintf("done · %.1f s · %d steps · %s tokens in · %s out",
 		float64(ev.DurationMS)/1000, ev.NumTurns, shortNum(in), shortNum(u.OutputTokens))
 	if t := u.OutputDetails.ThinkingTokens; t > 0 {
-		s += fmt.Sprintf(" (davon %s Denken)", shortNum(t))
+		s += fmt.Sprintf(" (%s thinking)", shortNum(t))
 	}
 	if ev.IsError {
-		s = "abgebrochen · " + s
+		s = "aborted · " + s
 		if ev.APIErrorStatus != nil {
-			s += fmt.Sprintf(" · API-Fehler %d", *ev.APIErrorStatus)
+			s += fmt.Sprintf(" · API error %d", *ev.APIErrorStatus)
 		}
 	}
 	return s
@@ -399,7 +400,7 @@ func shortNum(n int) string {
 
 // initSummary describes the process start from the system/init event.
 func initSummary(ev streamEvent) string {
-	s := fmt.Sprintf("Session bereit · Modell %s · Modus %s", ev.Model, ev.PermissionMode)
+	s := fmt.Sprintf("Session ready · model %s · mode %s", ev.Model, ev.PermissionMode)
 	if ev.Version != "" {
 		s += " · Claude Code " + ev.Version
 	}
@@ -415,5 +416,5 @@ func initSummary(ev streamEvent) string {
 
 func denialText(d denial) string {
 	return toolSummary(contentBlock{Name: d.ToolName, Input: d.ToolInput}) +
-		"  – vom Rechte-Modus nicht erlaubt"
+		"  – not allowed by the permission mode"
 }

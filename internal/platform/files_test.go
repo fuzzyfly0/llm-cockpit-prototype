@@ -116,7 +116,7 @@ func TestReadPreview(t *testing.T) {
 		t.Fatalf("got %q, %v", out, err)
 	}
 	_ = os.WriteFile(p, []byte{0, 1, 2}, 0o644)
-	if out, _ := ReadPreview(p); out != "(Binärdatei)" {
+	if out, _ := ReadPreview(p); out != "(binary file)" {
 		t.Fatalf("binary: %q", out)
 	}
 }

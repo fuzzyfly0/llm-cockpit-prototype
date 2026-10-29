@@ -14,6 +14,7 @@ package ui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/stefa/llm-cockpit/internal/core"
 	"github.com/stefa/llm-cockpit/internal/platform"
 )
 
@@ -33,52 +35,111 @@ const (
 	tabPins
 )
 
-var tabNames = []string{"Verlauf", "Dateien", "Notizen", "Pins"}
+var tabNames = []string{"History", "Files", "Notes", "Pins"}
 
 // command is one entry of the command list ("/" or ctrl+p).
 type command struct {
 	name, label, keys string
 	action            string // action id for handleNav
+	// claude marks Claude Code's own commands (reported at session start);
+	// they are sent to Claude as a message instead of run by the cockpit.
+	claude bool
 }
 
 var commands = []command{
-	{"neu", "Neue Session", "ctrl+n", "n"},
-	{"modell", "Modell der Session wählen", "", "M"},
-	{"effort", "Effort der Session wählen", "", "E"},
-	{"ansicht", "Ansicht wechseln: normal / alles / kompakt", "ctrl+o", "ctrl+o"},
-	{"verlauf", "Reiter Verlauf", "alt+1", "tab:0"},
-	{"dateien", "Reiter Dateien", "alt+2", "tab:1"},
-	{"notizen", "Reiter Notizen", "alt+3", "tab:2"},
-	{"pins", "Reiter Pins", "alt+4", "tab:3"},
-	{"kopieren", "Gewählten Eintrag / letzte Antwort kopieren", "y im Verlauf", "y"},
-	{"notizen-kopieren", "Notizen kopieren", "ctrl+y in Notizen", "Y"},
-	{"pin", "Gewählten Eintrag / letzte Antwort pinnen", "p im Verlauf", "p"},
-	{"diff", "git diff des Projekts anzeigen", "", "f"},
-	{"pull", "git pull (nur fast-forward)", "", "u"},
-	{"ide", "Projekt in der IDE öffnen", "", "c"},
-	{"explorer", "Ordner im Explorer öffnen", "", "e"},
-	{"session", "Session suchen und wechseln", "ctrl+k", "switch"},
-	{"link", "Session-Link öffnen (config session_link + Name)", "", "link"},
-	{"github", "GitHub öffnen (Repo bzw. Suche)", "", "g"},
-	{"terminal", "Session im Terminal fortsetzen", "", "t"},
-	{"unterbrechen", "Claude unterbrechen", "esc", "interrupt"},
-	{"stop", "Session stoppen", "", "x"},
-	{"start", "Session starten / fortsetzen", "", "r"},
-	{"entfernen", "Session entfernen", "entf in der Liste", "ctrl+d"},
-	{"hilfe", "Hilfe und Tastenkürzel", "?", "?"},
-	{"beenden", "Cockpit beenden", "ctrl+c ×2", "q"},
+	{"new", "New session", "ctrl+n", "n", false},
+	{"model", "Choose the session's model", "", "M", false},
+	{"effort", "Choose the session's effort", "", "E", false},
+	{"view", "Switch view: normal / all / compact", "ctrl+o", "ctrl+o", false},
+	{"history", "History tab", "alt+1", "tab:0", false},
+	{"files", "Files tab", "alt+2", "tab:1", false},
+	{"notes", "Notes tab", "alt+3", "tab:2", false},
+	{"pins", "Pins tab", "alt+4", "tab:3", false},
+	{"copy", "Copy the selected entry / last answer", "y in history", "y", false},
+	{"copy-notes", "Copy the notes", "ctrl+y in notes", "Y", false},
+	{"pin", "Pin the selected entry / last answer", "p in history", "p", false},
+	{"diff", "Show the project's git diff", "", "f", false},
+	{"pull", "git pull (fast-forward only)", "", "u", false},
+	{"ide", "Open the project in the IDE", "", "c", false},
+	{"explorer", "Open the folder in the file manager", "", "e", false},
+	{"session", "Search and switch sessions", "ctrl+k", "switch", false},
+	{"link", "Open the session link (config session_link + name)", "", "link", false},
+	{"github", "Open GitHub (repository or search)", "", "g", false},
+	{"terminal", "Continue the session in a terminal", "", "t", false},
+	{"interrupt", "Interrupt Claude", "esc / ctrl+c", "interrupt", false},
+	{"stop", "Stop the session", "", "x", false},
+	{"start", "Start / resume the session", "", "r", false},
+	{"remove", "Remove the session", "del in the list", "ctrl+d", false},
+	{"settings", "Settings (IDE, permission mode, thinking, link, …)", "", "settings", false},
+	{"help", "Help and keyboard shortcuts", "?", "?", false},
+	{"quit", "Quit the cockpit", "ctrl+c ×2", "q", false},
 }
 
-// paletteMatches returns the commands matching the "/…" text in the input.
+// paletteQuery is the command name typed after "/" (arguments excluded).
+func (a *Model) paletteQuery() string {
+	q := strings.TrimPrefix(strings.TrimSpace(a.input.Value()), "/")
+	if i := strings.IndexAny(q, " \n"); i >= 0 {
+		q = q[:i]
+	}
+	return strings.ToLower(q)
+}
+
+// paletteMatches returns the cockpit commands and Claude Code's own
+// commands matching the "/…" text in the input, best matches first: exact
+// name, name prefix, name contains the text, description contains it.
 func (a *Model) paletteMatches() []command {
-	q := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(a.input.Value()), "/"))
+	q := a.paletteQuery()
+	all := slices.Clone(commands)
+	for _, name := range a.mgr.ClaudeCommands() {
+		if !strings.HasPrefix(name, "_") { // skip internal commands
+			all = append(all, command{name: name, label: "Claude Code command, sent to Claude", claude: true})
+		}
+	}
+	rank := func(c command) int {
+		name := strings.ToLower(c.name)
+		switch {
+		case q == "":
+			return 0
+		case name == q:
+			return 1
+		case strings.HasPrefix(name, q):
+			return 2
+		case strings.Contains(name, q):
+			return 3
+		case strings.Contains(strings.ToLower(c.label), q):
+			return 4
+		}
+		return -1
+	}
 	var out []command
-	for _, c := range commands {
-		if q == "" || strings.Contains(c.name, q) || strings.Contains(strings.ToLower(c.label), q) {
+	for _, c := range all {
+		if rank(c) >= 0 {
 			out = append(out, c)
 		}
 	}
+	slices.SortStableFunc(out, func(x, y command) int { return rank(x) - rank(y) })
 	return out
+}
+
+// sendClaudeCommand sends a Claude Code slash command as a message,
+// including arguments typed after it ("/compact focus on the API").
+func (a *Model) sendClaudeCommand(c command) tea.Cmd {
+	text := "/" + c.name
+	if typed := strings.TrimSpace(a.input.Value()); strings.EqualFold(a.paletteQuery(), c.name) {
+		text = typed
+	}
+	a.input.SetValue("")
+	a.paletteSel = 0
+	a.fitInput()
+	s, ok := a.selected()
+	if !ok {
+		a.status = "create a session first (ctrl+n)"
+		return nil
+	}
+	if err := a.mgr.Send(s.ID, text); err != nil {
+		a.status = "Sending failed: " + err.Error()
+	}
+	return nil
 }
 
 // paletteOpen reports whether the command list is shown.
@@ -95,7 +156,11 @@ func (a *Model) openPalette() tea.Cmd {
 }
 
 func (a *Model) runCommand(c command) (tea.Model, tea.Cmd) {
+	if c.claude {
+		return a, a.sendClaudeCommand(c)
+	}
 	a.input.SetValue("")
+	a.fitInput()
 	a.paletteSel = 0
 	return a.runAction(c.action)
 }
@@ -112,16 +177,19 @@ func (a *Model) runAction(action string) (tea.Model, tea.Cmd) {
 		return a, nil
 	case action == "switch":
 		return a, a.openSwitcher()
+	case action == "settings":
+		a.openSettings()
+		return a, nil
 	case action == "link":
 		s, ok := a.selected()
 		tmpl := a.mgr.Config().SessionLink
 		switch {
 		case !ok:
 		case tmpl == "":
-			a.status = `kein Link konfiguriert: in state.json z. B. "session_link": "https://firma.atlassian.net/browse/"`
+			a.status = `no link configured: set e.g. "session_link": "https://company.atlassian.net/browse/" in state.json`
 		default:
 			u := platform.SessionURL(tmpl, s.Name)
-			a.report(platform.OpenURL(u), "Browser: "+u)
+			a.report(platform.OpenURL(u), "browser: "+u)
 		}
 		return a, nil
 	}
@@ -132,7 +200,7 @@ func (a *Model) runAction(action string) (tea.Model, tea.Cmd) {
 // switcher). The typed draft is kept and restored afterwards.
 func (a *Model) openSwitcher() tea.Cmd {
 	if len(a.sessions) == 0 {
-		a.status = "noch keine Sessions (ctrl+n)"
+		a.status = "no sessions yet (ctrl+n)"
 		return nil
 	}
 	a.switching = true
@@ -201,9 +269,9 @@ func (a *Model) handleSwitcherKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (a *Model) renderSwitcher(w int) string {
 	matches := a.switchMatches()
-	lines := []string{bold.Render("Session wechseln") + dim.Render("  (tippen sucht in Name, Ordner, Branch, Notizen · enter wechseln · esc zurück)")}
+	lines := []string{bold.Render("Switch session") + dim.Render("  (type to search name, folder, branch, notes · enter switch · esc back)")}
 	if len(matches) == 0 {
-		lines = append(lines, dim.Render("  keine passende Session"))
+		lines = append(lines, dim.Render("  no matching session"))
 	}
 	a.switchSel = max(min(a.switchSel, len(matches)-1), 0)
 	for n, i := range matches {
@@ -222,17 +290,35 @@ func (a *Model) renderSwitcher(w int) string {
 	return strings.Join(lines, "\n")
 }
 
+var claudeTag = lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true).Render("claude ▸ ")
+
 func (a *Model) renderPalette(w int) string {
 	matches := a.paletteMatches()
-	lines := []string{bold.Render("Befehle") + dim.Render("  (tippen filtert · ↑↓ wählen · enter ausführen · esc schließen)")}
+	lines := []string{bold.Render("Commands") + dim.Render("  (type to filter · ↑↓ select · enter run · esc close · ") +
+		claudeTag + dim.Render("= sent to Claude)")}
 	if len(matches) == 0 {
-		lines = append(lines, dim.Render("  kein passender Befehl"))
+		lines = append(lines, dim.Render("  no matching command"))
 	}
 	a.paletteSel = max(min(a.paletteSel, len(matches)-1), 0)
-	for i, c := range matches {
-		line := fmt.Sprintf("  /%-17s %s", c.name, c.label)
-		if c.keys != "" {
-			line += dim.Render("  " + c.keys)
+	// Scroll so the selection stays visible.
+	rows := max(a.bodyHeight()-1, 1)
+	if a.paletteSel < a.paletteTop {
+		a.paletteTop = a.paletteSel
+	}
+	if a.paletteSel >= a.paletteTop+rows {
+		a.paletteTop = a.paletteSel - rows + 1
+	}
+	a.paletteTop = max(min(a.paletteTop, len(matches)-rows), 0)
+	for i := a.paletteTop; i < len(matches) && i < a.paletteTop+rows; i++ {
+		c := matches[i]
+		line := fmt.Sprintf("  /%-18s ", c.name)
+		if c.claude {
+			line += claudeTag + dim.Render(c.label)
+		} else {
+			line += c.label
+			if c.keys != "" {
+				line += dim.Render("  " + c.keys)
+			}
 		}
 		line = ansi.Truncate(line, w, "…")
 		if i == a.paletteSel {
@@ -248,7 +334,7 @@ func (a *Model) renderPalette(w int) string {
 func (a *Model) setTab(t tab) tea.Cmd {
 	s, ok := a.selected()
 	if !ok {
-		a.status = "erst eine Session anlegen (ctrl+n)"
+		a.status = "create a session first (ctrl+n)"
 		return nil
 	}
 	a.tab = t
@@ -288,7 +374,7 @@ func (a *Model) saveNotes() bool {
 func (a *Model) backToInput() tea.Cmd {
 	if a.focus == focusNotes || a.tab == tabNotes {
 		if a.saveNotes() {
-			a.status = "Notizen gespeichert"
+			a.status = "notes saved"
 		}
 		a.notesFor = ""
 		a.notes.Blur()
@@ -305,7 +391,7 @@ func (a *Model) interrupt() {
 		return
 	}
 	if a.mgr.Interrupt(s.ID) {
-		a.status = "Claude wird unterbrochen"
+		a.status = "interrupting Claude"
 	}
 }
 
@@ -330,8 +416,16 @@ func (a *Model) toInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (a *Model) handleGlobalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 	switch msg.String() {
 	case "ctrl+c":
+		// Like Claude Code: clear the text, else interrupt a working
+		// session, else quit on the second press.
 		if a.focus == focusInput && a.input.Value() != "" {
 			a.input.SetValue("")
+			a.fitInput()
+			a.quitArmed = time.Time{}
+			return a, nil, true
+		}
+		if a.cur.Status == core.StatusWorking {
+			a.interrupt()
 			a.quitArmed = time.Time{}
 			return a, nil, true
 		}
@@ -340,7 +434,7 @@ func (a *Model) handleGlobalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 			return a, tea.Quit, true
 		}
 		a.quitArmed = time.Now()
-		a.status = "Nochmal ctrl+c zum Beenden"
+		a.status = "press ctrl+c again to quit"
 		return a, nil, true
 	case "ctrl+o":
 		a.cycleView()
@@ -438,13 +532,13 @@ func (a *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		text := strings.TrimSpace(a.input.Value())
 		if s, ok := a.selected(); ok && text != "" {
 			if err := a.mgr.Send(s.ID, text); err != nil {
-				a.status = "Senden fehlgeschlagen: " + err.Error()
+				a.status = "Sending failed: " + err.Error()
 			}
 			a.input.SetValue("")
 			a.histPos = -1
 			a.fitInput()
 		} else if !ok && text != "" {
-			a.status = "erst eine Session anlegen (ctrl+n)"
+			a.status = "create a session first (ctrl+n)"
 		}
 		return a, nil
 	}
@@ -460,7 +554,7 @@ func (a *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (a *Model) browseHistory(back bool) {
 	var prompts []string
 	for _, m := range a.cur.Messages {
-		if m.Kind == 0 && !m.Sub { // core.KindUser
+		if m.Kind == core.KindUser && !m.Sub {
 			prompts = append(prompts, m.Text)
 		}
 	}
@@ -599,28 +693,28 @@ func (a *Model) hintLine() string {
 	case focusInput:
 		switch {
 		case a.switching:
-			h = "tippen sucht · ↑↓ wählen · enter wechseln · esc zurück"
+			h = "type to search · ↑↓ select · enter switch · esc back"
 		case a.paletteOpen():
-			h = "tippen filtert · ↑↓ wählen · enter ausführen · esc schließen"
-		case a.cur.Status == 2: // core.StatusWorking
-			h = "esc unterbrechen · / Befehle · ? Hilfe · tab Verlauf · alt+↑↓ Session · ctrl+o Ansicht"
+			h = "type to filter · ↑↓ select · enter run · esc close"
+		case a.cur.Status == core.StatusWorking:
+			h = "esc / ctrl+c interrupt · / commands · ? help · tab history · alt+↑↓ session · ctrl+o view"
 		default:
-			h = "enter senden · / Befehle · ? Hilfe · ↑ letzte Nachricht · tab Verlauf · alt+↑↓ Session · ctrl+o Ansicht"
+			h = "enter send · / commands · ? help · ↑ last message · tab history · alt+↑↓ session · ctrl+o view"
 		}
 	case focusMessages:
-		h = "↑↓ Eintrag · enter ganz zeigen · y kopieren · p pinnen · o Datei in IDE · d Diff in IDE · esc zurück"
+		h = "↑↓ entry · enter expand · y copy · p pin · o open file in IDE · d diff in IDE · esc back"
 	case focusList:
-		h = "↑↓ Session · enter schreiben · entf entfernen · esc zurück · ctrl+n neu"
+		h = "↑↓ session · enter write · del remove · esc back · ctrl+n new"
 	case focusFiles:
-		h = "↑↓ Datei · enter öffnen · →← auf/zu · o in IDE · d Diff in IDE · m nur Änderungen · esc zurück"
+		h = "↑↓ file · enter open · →← expand/collapse · o open in IDE · d diff in IDE · m changes only · esc back"
 	case focusNotes:
-		h = "Notizen schreiben · esc speichern und zurück · ctrl+y alles kopieren"
+		h = "write notes · esc save and back · ctrl+y copy all"
 	case focusPins:
-		h = "↑↓ Pin · enter zur Stelle springen · entf entfernen · esc zurück"
+		h = "↑↓ pin · enter jump to entry · del remove · esc back"
 	default:
 		h = helpLine[a.focus]
 	}
-	right := "ctrl+k Session · ctrl+p Befehle"
+	right := "ctrl+k session · ctrl+p commands"
 	gap := a.w - lipgloss.Width(h) - lipgloss.Width(right) - 1
 	if gap < 1 {
 		return dim.Render(ansi.Truncate(h, a.w, "…"))

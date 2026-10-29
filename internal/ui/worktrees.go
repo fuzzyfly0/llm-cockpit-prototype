@@ -43,8 +43,8 @@ func (a *Model) newSession() tea.Cmd {
 	if len(opts) == 0 {
 		return a.askDir()
 	}
-	opts = append(opts, pickOption{"Anderer Ordner …", ""})
-	a.openPicker("Neue Session – wo?", opts, opts[0].value, func(v string) (string, tea.Cmd) {
+	opts = append(opts, pickOption{"Other folder …", ""})
+	a.openPicker("New session – where?", opts, opts[0].value, func(v string) (string, tea.Cmd) {
 		if v == "" {
 			return "", a.askDir()
 		}
@@ -92,7 +92,7 @@ func (a *Model) knownPlaces() []pickOption {
 func (a *Model) askDir() tea.Cmd {
 	wd, _ := os.Getwd()
 	a.focus = focusNewDir
-	a.input.Prompt = "Neue Session › Ordner: "
+	a.input.Prompt = "New session › folder: "
 	a.input.SetValue(wd)
 	a.input.CursorEnd()
 	return a.input.Focus()
@@ -102,7 +102,7 @@ func (a *Model) askDir() tea.Cmd {
 func (a *Model) askName(dir string) {
 	a.newDir = dir
 	a.focus = focusNewName
-	a.input.Prompt = "Neue Session › Name: "
+	a.input.Prompt = "New session › name: "
 	a.input.SetValue(filepath.Base(dir))
 	a.input.CursorEnd()
 	a.input.Focus()
@@ -111,7 +111,7 @@ func (a *Model) askName(dir string) {
 // createSession starts a session, selects it and makes it ready for typing.
 func (a *Model) createSession(name, dir string) tea.Cmd {
 	if _, err := a.mgr.Create(name, dir); err != nil {
-		a.status = "Start fehlgeschlagen: " + err.Error()
+		a.status = "Start failed: " + err.Error()
 	}
 	a.sel = len(a.mgr.List()) - 1
 	a.resetInput()
@@ -127,8 +127,8 @@ func (a *Model) chooseWorkspace(dir, repo string) {
 	a.newDir, a.newRepo = dir, repo
 	branch := platform.GitStatus(dir).Branch
 	opts := []pickOption{
-		{fmt.Sprintf("Direkt im Ordner arbeiten (⎇ %s)", branch), "direct"},
-		{"Neuer Worktree mit neuem Branch …", "new"},
+		{fmt.Sprintf("Work directly in the folder (⎇ %s)", branch), "direct"},
+		{"New worktree with a new branch …", "new"},
 	}
 	if wts, err := platform.ListWorktrees(repo); err == nil {
 		for _, wt := range wts {
@@ -139,22 +139,22 @@ func (a *Model) chooseWorkspace(dir, repo string) {
 		}
 	}
 	for _, b := range platform.FreeBranches(repo, 15) {
-		opts = append(opts, pickOption{"Branch: " + b + " → eigener Worktree", "br:" + b})
+		opts = append(opts, pickOption{"Branch: " + b + " → own worktree", "br:" + b})
 	}
-	a.openPicker("Neue Session in "+filepath.Base(repo), opts, "direct", func(v string) (string, tea.Cmd) {
+	a.openPicker("New session in "+filepath.Base(repo), opts, "direct", func(v string) (string, tea.Cmd) {
 		switch {
 		case v == "direct":
 			a.askName(dir)
 		case v == "new":
 			a.focus = focusNewWorktree
-			a.input.Prompt = "Neuer Worktree › Name (wird zum Branch): "
+			a.input.Prompt = "New worktree › name (becomes the branch): "
 			a.input.Focus()
 		case strings.HasPrefix(v, "wt:"):
 			path := strings.TrimPrefix(v, "wt:")
 			return "", a.createSession(filepath.Base(path), path)
 		case strings.HasPrefix(v, "br:"):
 			b := strings.TrimPrefix(v, "br:")
-			return "lege Worktree für " + b + " an…", addWorktreeCmd(repo, b, b, "")
+			return "creating worktree for " + b + "…", addWorktreeCmd(repo, b, b, "")
 		}
 		return "", nil
 	})
@@ -172,15 +172,15 @@ func addWorktreeCmd(repo, name, branch, base string) tea.Cmd {
 
 func (a *Model) onWorktreeAdded(msg worktreeMsg) tea.Cmd {
 	if msg.err != nil {
-		a.status = "Worktree konnte nicht angelegt werden: " + msg.err.Error()
+		a.status = "could not create the worktree: " + msg.err.Error()
 		return nil
 	}
 	cmd := a.createSession(msg.name, msg.path)
 	from := ""
 	if msg.base != "" {
-		from = " ab " + msg.base
+		from = " from " + msg.base
 	}
-	a.status = fmt.Sprintf("Worktree angelegt: %s (Branch %s%s)", msg.path, msg.branch, from)
+	a.status = fmt.Sprintf("worktree created: %s (branch %s%s)", msg.path, msg.branch, from)
 	return cmd
 }
 
@@ -188,13 +188,13 @@ func (a *Model) onWorktreeAdded(msg worktreeMsg) tea.Cmd {
 func (a *Model) newWorktreeEntered(name string) tea.Cmd {
 	branch := platform.BranchName(name)
 	if branch == "" {
-		a.status = "Bitte einen Namen eingeben, z. B. login-fix oder PROJ-123"
+		a.status = "please enter a name, e.g. login-fix or PROJ-123"
 		return nil
 	}
 	a.resetInput()
 	a.focus = focusInput
 	base := platform.DefaultBase(a.newRepo)
-	a.status = fmt.Sprintf("lege Worktree %s an (Branch %s ab %s)…", branch, branch, base)
+	a.status = fmt.Sprintf("creating worktree %s (branch %s from %s)…", branch, branch, base)
 	return addWorktreeCmd(a.newRepo, branch, branch, base)
 }
 
@@ -204,27 +204,27 @@ func (a *Model) confirmRemove(s core.Session) {
 	g := a.git[s.Dir]
 	if !g.IsWorktree {
 		a.focus = focusConfirm
-		a.status = fmt.Sprintf("Session %q aus dem Cockpit entfernen? (y/n)", s.Name)
+		a.status = fmt.Sprintf("Remove session %q from the cockpit? (y/n)", s.Name)
 		a.confirm = func() { a.mgr.Remove(s.ID); a.refresh() }
 		return
 	}
 	opts := []pickOption{
-		{"Nur aus dem Cockpit entfernen (Worktree bleibt)", "keep"},
-		{fmt.Sprintf("Session entfernen und Worktree löschen (Branch %s bleibt)", g.Branch), "delete"},
-		{"Abbrechen", "cancel"},
+		{"Remove from the cockpit only (keep the worktree)", "keep"},
+		{fmt.Sprintf("Remove the session and delete the worktree (branch %s is kept)", g.Branch), "delete"},
+		{"Cancel", "cancel"},
 	}
-	a.openPicker("Session entfernen – "+s.Name, opts, "keep", func(v string) (string, tea.Cmd) {
+	a.openPicker("Remove session – "+s.Name, opts, "keep", func(v string) (string, tea.Cmd) {
 		switch v {
 		case "keep":
 			a.mgr.Remove(s.ID)
-			return "Session entfernt, Worktree bleibt: " + s.Dir, nil
+			return "session removed, worktree kept: " + s.Dir, nil
 		case "delete":
 			if g.Dirty > 0 {
-				a.openPicker(fmt.Sprintf("Worktree %s hat %d nicht committete Änderungen", filepath.Base(s.Dir), g.Dirty),
-					[]pickOption{{"Abbrechen", "cancel"}, {"Trotzdem löschen – die Änderungen gehen verloren", "force"}}, "cancel",
+				a.openPicker(fmt.Sprintf("Worktree %s has %d uncommitted changes", filepath.Base(s.Dir), g.Dirty),
+					[]pickOption{{"Cancel", "cancel"}, {"Delete anyway – the changes will be lost", "force"}}, "cancel",
 					func(v string) (string, tea.Cmd) {
 						if v != "force" {
-							return "abgebrochen", nil
+							return "cancelled", nil
 						}
 						return a.removeWithWorktree(s, g.Root, true)
 					})
@@ -232,18 +232,18 @@ func (a *Model) confirmRemove(s core.Session) {
 			}
 			return a.removeWithWorktree(s, g.Root, false)
 		}
-		return "abgebrochen", nil
+		return "cancelled", nil
 	})
 }
 
 func (a *Model) removeWithWorktree(s core.Session, repo string, force bool) (string, tea.Cmd) {
 	a.mgr.Remove(s.ID) // stops the Claude process first
 	dir := s.Dir
-	return "lösche Worktree " + dir + "…", func() tea.Msg {
+	return "deleting worktree " + dir + "…", func() tea.Msg {
 		if err := platform.RemoveWorktree(repo, dir, force); err != nil {
-			return statusMsg("Worktree nicht gelöscht: " + err.Error())
+			return statusMsg("worktree not deleted: " + err.Error())
 		}
-		return statusMsg("Session und Worktree gelöscht: " + dir)
+		return statusMsg("session and worktree deleted: " + dir)
 	}
 }
 
@@ -264,7 +264,7 @@ func (a *Model) groups() []group {
 			if g.IsRepo && g.Root != "" {
 				key, label = "repo:"+strings.ToLower(g.Root), filepath.Base(g.Root)
 			} else if !g.IsRepo {
-				key, label = "none", "Ohne git-Repo"
+				key, label = "none", "No git repository"
 			}
 		}
 		gi, ok := index[key]

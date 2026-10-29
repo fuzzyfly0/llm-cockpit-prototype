@@ -29,7 +29,7 @@ func TestMessagesFrom(t *testing.T) {
 			[]Message{{UUID: "u1", Kind: KindAssistant, Text: "Eins"}}},
 		{"thinking shows its duration",
 			`{"type":"assistant","uuid":"u2","thinking_duration_ms":3200,"message":{"content":[{"type":"thinking","thinking":""}]}}`,
-			[]Message{{UUID: "u2", Kind: KindThinking, Text: "nachgedacht (3.2 s)"}}},
+			[]Message{{UUID: "u2", Kind: KindThinking, Text: "thought (3.2 s)"}}},
 		{"tool use",
 			`{"type":"assistant","uuid":"u3","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"main.go"}}]}}`,
 			[]Message{{UUID: "u3", Kind: KindTool, Text: "Read main.go", Tool: "Read", File: "main.go", Detail: "file_path: main.go"}}},
@@ -50,7 +50,7 @@ func TestMessagesFrom(t *testing.T) {
 			[]Message{{UUID: "u4", Kind: KindUser, Text: "Hallo"}}},
 		{"tool result keeps the full output",
 			`{"type":"user","uuid":"u5","message":{"content":[{"type":"tool_result","content":"a.go\nb.go\nc.go"}]}}`,
-			[]Message{{UUID: "u5", Kind: KindResult, Text: "a.go (+2 Zeilen)", Detail: "a.go\nb.go\nc.go"}}},
+			[]Message{{UUID: "u5", Kind: KindResult, Text: "a.go (+2 lines)", Detail: "a.go\nb.go\nc.go"}}},
 		{"system reminder is skipped",
 			`{"type":"user","uuid":"u6","message":{"content":"<system-reminder>x</system-reminder>"}}`,
 			nil},
@@ -78,7 +78,7 @@ func TestEditResultBecomesNumberedDiff(t *testing.T) {
 	if len(msgs) != 1 || !msgs[0].Diff {
 		t.Fatalf("got %+v", msgs)
 	}
-	if msgs[0].Text != "2 Zeilen hinzugefügt, 1 entfernt" {
+	if msgs[0].Text != "2 lines added, 1 removed" {
 		t.Errorf("summary %q", msgs[0].Text)
 	}
 	want := "   21    func Total() {\n   22 -  \treturn 0\n   22 +  \tsum := 0\n   23 +  \treturn sum\n   24    }"
@@ -103,7 +103,7 @@ func TestThinkingIsStreamed(t *testing.T) {
 	}
 	m.handle(s, parse(t, `{"type":"assistant","uuid":"t1","thinking_duration_ms":2500,"message":{"content":[{"type":"thinking","thinking":"Working through the arithmetic: 11:27."}]}}`))
 	got := s.Messages[0]
-	if len(s.Messages) != 1 || got.Partial || got.Text != "nachgedacht (2.5 s)" || got.Detail != "Working through the arithmetic: 11:27." {
+	if len(s.Messages) != 1 || got.Partial || got.Text != "thought (2.5 s)" || got.Detail != "Working through the arithmetic: 11:27." {
 		t.Fatalf("after block: %+v", s.Messages)
 	}
 }
@@ -118,10 +118,10 @@ func TestResultAddsSummaryAndDenials(t *testing.T) {
 	if len(s.Messages) != 2 {
 		t.Fatalf("messages: %+v", s.Messages)
 	}
-	if d := s.Messages[0]; d.Kind != KindDenied || d.Text != "PowerShell go test ./...  – vom Rechte-Modus nicht erlaubt" {
+	if d := s.Messages[0]; d.Kind != KindDenied || d.Text != "PowerShell go test ./...  – not allowed by the permission mode" {
 		t.Errorf("denial: %+v", d)
 	}
-	want := "fertig · 12.3 s · 3 Schritte · 49k Tokens rein · 923 raus (davon 751 Denken)"
+	want := "done · 12.3 s · 3 steps · 49k tokens in · 923 out (751 thinking)"
 	if sum := s.Messages[1]; sum.Kind != KindTurn || sum.Text != want {
 		t.Errorf("summary: %q, want %q", sum.Text, want)
 	}
@@ -136,7 +136,7 @@ func TestInitShownOncePerProcess(t *testing.T) {
 	if len(s.Messages) != 1 {
 		t.Fatalf("init lines: %+v", s.Messages)
 	}
-	want := "Session bereit · Modell claude-haiku-5-5 · Modus acceptEdits · Claude Code 2.1.302 · MCP: docs (pending)"
+	want := "Session ready · model claude-haiku-5-5 · mode acceptEdits · Claude Code 2.1.302 · MCP: docs (pending)"
 	if s.Messages[0].Text != want {
 		t.Errorf("got %q", s.Messages[0].Text)
 	}

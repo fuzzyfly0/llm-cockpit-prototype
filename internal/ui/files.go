@@ -203,15 +203,15 @@ func (a *Model) filesHeight() int { return max(a.bodyHeight()-3, 1) }
 func (a *Model) renderFiles(w int) string {
 	v := &a.files
 	s, _ := a.selected()
-	mode := "alle"
+	mode := "all"
 	if v.onlyChanged {
-		mode = "nur Änderungen"
+		mode = "changes only"
 	}
-	head := bold.Render("Dateien – "+s.Name) +
-		dim.Render(fmt.Sprintf("  %d Dateien, %d geändert · Ansicht: %s", v.total, v.changed, mode))
+	head := bold.Render("Files – "+s.Name) +
+		dim.Render(fmt.Sprintf("  %d files, %d changed · showing: %s", v.total, v.changed, mode))
 	lines := []string{ansi.Truncate(head, w, "…")}
 	if v.root == nil {
-		return lines[0] + "\n" + dim.Render("lade…")
+		return lines[0] + "\n" + dim.Render("loading…")
 	}
 	if v.err != nil {
 		lines = append(lines, infoStyle.Render(v.err.Error()))
@@ -227,7 +227,7 @@ func (a *Model) renderFiles(w int) string {
 		lines = append(lines, renderFileRow(v.rows[i], v.expanded, v.onlyChanged, i == v.sel, w))
 	}
 	if len(v.rows) == 0 {
-		lines = append(lines, dim.Render("keine Dateien"))
+		lines = append(lines, dim.Render("no files"))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -309,11 +309,11 @@ func (a *Model) handleFilesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, a.activateFile()
 	case "o": // same keys as in the history: o opens, d diffs in the IDE
 		if ok {
-			a.report(platform.OpenIDE(a.mgr.Config().IDE, v.dir, a.absPath(n.path)), "In IDE geöffnet: "+n.path)
+			a.report(platform.OpenIDE(a.mgr.Config().IDE, v.dir, a.absPath(n.path)), "opened in the IDE: "+n.path)
 		}
 	case "d":
 		if ok && !n.dir {
-			a.report(platform.OpenIDEDiff(a.mgr.Config().IDE, v.dir, a.absPath(n.path)), "Diff in der IDE: "+n.path)
+			a.report(platform.OpenIDEDiff(a.mgr.Config().IDE, v.dir, a.absPath(n.path)), "diff in the IDE: "+n.path)
 		}
 	default:
 		if isPrintable(msg) {

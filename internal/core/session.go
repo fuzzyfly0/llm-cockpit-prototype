@@ -21,13 +21,13 @@ const (
 func (s Status) String() string {
 	switch s {
 	case StatusIdle:
-		return "wartet"
+		return "waiting"
 	case StatusWorking:
-		return "arbeitet"
+		return "working"
 	case StatusError:
-		return "fehler"
+		return "error"
 	default:
-		return "gestoppt"
+		return "stopped"
 	}
 }
 

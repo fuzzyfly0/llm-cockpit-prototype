@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -154,7 +155,7 @@ func (m *Manager) Start(id string) error {
 	defer m.mu.Unlock()
 	s := m.find(id)
 	if s == nil {
-		return errors.New("session nicht gefunden")
+		return errors.New("session not found")
 	}
 	return m.start(s)
 }
@@ -179,7 +180,7 @@ func (m *Manager) start(s *Session) error {
 	cmd.Stderr = p.stderr
 	if err := cmd.Start(); err != nil {
 		s.Status = StatusError
-		s.Messages = append(s.Messages, Message{Kind: KindInfo, Text: "Start fehlgeschlagen: " + err.Error()})
+		s.Messages = append(s.Messages, Message{Kind: KindInfo, Text: "Start failed: " + err.Error()})
 		return err
 	}
 	s.proc = p
@@ -246,7 +247,7 @@ func (m *Manager) readLoop(s *Session, p *process, stdout io.Reader) {
 			s.Status = StatusStopped
 		} else {
 			s.Status = StatusError
-			msg := "Prozess beendet: " + waitErr.Error()
+			msg := "Process exited: " + waitErr.Error()
 			if tail := strings.TrimSpace(p.stderr.String()); tail != "" {
 				msg += "\n" + tail
 			}
@@ -267,12 +268,16 @@ func (m *Manager) handle(s *Session, ev streamEvent) {
 				m.save()
 			}
 			s.ActiveModel = ev.Model
+			if len(ev.SlashCommands) > 0 && !slices.Equal(ev.SlashCommands, m.st.ClaudeCommands) {
+				m.st.ClaudeCommands = ev.SlashCommands
+				m.save()
+			}
 			if s.proc != nil && !s.proc.initShown {
 				s.proc.initShown = true
 				s.Messages = append(s.Messages, Message{Kind: KindInfo, Text: initSummary(ev)})
 			}
 		case "thinking_tokens":
-			s.Activity = fmt.Sprintf("💭 denkt… (~%d Tokens)", ev.EstimatedTokens)
+			s.Activity = fmt.Sprintf("💭 thinking… (~%d tokens)", ev.EstimatedTokens)
 		case "status":
 			if ev.Status != nil && *ev.Status != "" {
 				s.Activity = "⏳ " + *ev.Status
@@ -287,7 +292,7 @@ func (m *Manager) handle(s *Session, ev streamEvent) {
 	case "control_response":
 		if ev.Response != nil && ev.Response.Subtype != "success" {
 			s.Messages = append(s.Messages, Message{Kind: KindInfo,
-				Text: "Steuerbefehl abgelehnt: " + ev.Response.Error})
+				Text: "Control request rejected: " + ev.Response.Error})
 		}
 	case "rate_limit_event":
 		if l, ok := parseLimits(ev.RateLimitInfo, time.Now()); ok {
@@ -350,7 +355,7 @@ func (m *Manager) handle(s *Session, ev streamEvent) {
 			s.Messages = append(s.Messages, Message{Kind: KindDenied, Text: denialText(d)})
 		}
 		if ev.IsError && ev.Result != "" {
-			s.Messages = append(s.Messages, Message{Kind: KindInfo, Text: "Fehler: " + ev.Result})
+			s.Messages = append(s.Messages, Message{Kind: KindInfo, Text: "Error: " + ev.Result})
 		}
 		s.Messages = append(s.Messages, Message{Kind: KindTurn, Text: turnSummary(ev)})
 		m.save()
@@ -368,11 +373,11 @@ func (m *Manager) handleStream(s *Session, e *apiEvent) {
 		case "text":
 			s.Messages = append(s.Messages, Message{Kind: KindAssistant, Partial: true})
 			s.partial = len(s.Messages) - 1
-			s.Activity = "schreibt…"
+			s.Activity = "writing…"
 		case "thinking":
-			s.Messages = append(s.Messages, Message{Kind: KindThinking, Text: "denkt…", Partial: true})
+			s.Messages = append(s.Messages, Message{Kind: KindThinking, Text: "thinking…", Partial: true})
 			s.partialThink = len(s.Messages) - 1
-			s.Activity = "💭 denkt…"
+			s.Activity = "💭 thinking…"
 		case "tool_use":
 			s.Activity = "⚙ " + e.ContentBlock.Name + "…"
 		}
@@ -393,7 +398,7 @@ func (m *Manager) Send(id, text string) error {
 	defer m.mu.Unlock()
 	s := m.find(id)
 	if s == nil {
-		return errors.New("session nicht gefunden")
+		return errors.New("session not found")
 	}
 	if err := m.start(s); err != nil {
 		return err
@@ -407,7 +412,7 @@ func (m *Manager) Send(id, text string) error {
 	}
 	s.Messages = append(s.Messages, Message{Kind: KindUser, Text: text})
 	s.Status = StatusWorking
-	s.Activity = "denkt…"
+	s.Activity = "thinking…"
 	return nil
 }
 
@@ -429,8 +434,8 @@ func (m *Manager) Interrupt(id string) bool {
 	if _, err := s.proc.stdin.Write(append(req, '\n')); err != nil {
 		return false
 	}
-	s.Messages = append(s.Messages, Message{Kind: KindInfo, Text: "⏹ unterbrochen"})
-	s.Activity = "wird unterbrochen…"
+	s.Messages = append(s.Messages, Message{Kind: KindInfo, Text: "⏹ interrupted"})
+	s.Activity = "interrupting…"
 	return true
 }
 
@@ -475,6 +480,27 @@ func (m *Manager) Remove(id string) {
 	m.changed()
 }
 
+// ClaudeCommands returns the slash commands Claude Code reported last
+// (built-in ones, skills and the project's own commands).
+func (m *Manager) ClaudeCommands() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.st.ClaudeCommands)
+}
+
+// UpdateConfig changes the configuration and saves it. New settings apply
+// to sessions started afterwards.
+func (m *Manager) UpdateConfig(change func(c *Config)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	change(&m.st.Config)
+	applyDefaults(&m.st.Config)
+	m.save()
+}
+
+// StatePath is the file that holds configuration and sessions.
+func (m *Manager) StatePath() string { return m.path }
+
 // Limits returns the last known account usage (shared by all sessions).
 func (m *Manager) Limits() Limits {
 	m.mu.Lock()
@@ -489,7 +515,7 @@ func (m *Manager) SetModel(id, model string) string {
 	defer m.mu.Unlock()
 	s := m.find(id)
 	if s == nil {
-		return "session nicht gefunden"
+		return "session not found"
 	}
 	s.Model = model
 	return m.applySettings(s)
@@ -502,7 +528,7 @@ func (m *Manager) SetEffort(id, effort string) string {
 	defer m.mu.Unlock()
 	s := m.find(id)
 	if s == nil {
-		return "session nicht gefunden"
+		return "session not found"
 	}
 	s.Effort = effort
 	return m.applySettings(s)
@@ -514,17 +540,17 @@ func (m *Manager) SetEffort(id, effort string) string {
 func (m *Manager) applySettings(s *Session) string {
 	m.save()
 	if s.proc == nil {
-		return "gilt ab dem nächsten Start"
+		return "applies on the next start"
 	}
 	if s.Status == StatusWorking {
-		return "gilt ab dem nächsten Start (Session arbeitet gerade; x stoppt, r startet neu)"
+		return "applies on the next start (the session is working; /stop, then /start)"
 	}
 	stopProc(s)
 	s.proc = nil
 	if err := m.start(s); err != nil {
-		return "Neustart fehlgeschlagen: " + err.Error()
+		return "Restart failed: " + err.Error()
 	}
-	return "Session mit neuer Einstellung neu gestartet"
+	return "session restarted with the new setting"
 }
 
 func (m *Manager) SetNotes(id, notes string) {

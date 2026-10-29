@@ -127,7 +127,7 @@ func WorktreeDir(repo, branch string) string {
 // created from base; otherwise the existing branch is checked out.
 func AddWorktree(repo, path, branch, base string) error {
 	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("Ordner existiert bereits: %s", path)
+		return fmt.Errorf("folder already exists: %s", path)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err

@@ -55,10 +55,10 @@ func TestLiveSession(t *testing.T) {
 	}
 	defer m.StopAll()
 	// Changing settings restarts the waiting session with the new options.
-	if msg := m.SetModel(id, "claude-haiku-5-5"); msg != "Session mit neuer Einstellung neu gestartet" {
+	if msg := m.SetModel(id, "claude-haiku-5-5"); msg != "session restarted with the new setting" {
 		t.Fatalf("SetModel: %s", msg)
 	}
-	if msg := m.SetEffort(id, "low"); msg != "Session mit neuer Einstellung neu gestartet" {
+	if msg := m.SetEffort(id, "low"); msg != "session restarted with the new setting" {
 		t.Fatalf("SetEffort: %s", msg)
 	}
 	if err := m.Send(id, "Antworte nur mit dem Wort: Pong"); err != nil {

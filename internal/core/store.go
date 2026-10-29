@@ -27,6 +27,8 @@ type state struct {
 	Sessions []*Session `json:"sessions"`
 	// Limits is the last known account usage, shown until fresh data arrives.
 	Limits Limits `json:"limits"`
+	// ClaudeCommands are the slash commands Claude Code reported last.
+	ClaudeCommands []string `json:"claude_commands,omitempty"`
 }
 
 func defaultStatePath() (string, error) {

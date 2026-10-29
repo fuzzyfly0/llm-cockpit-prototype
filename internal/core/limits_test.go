@@ -49,7 +49,7 @@ func TestStartArgs(t *testing.T) {
 func TestSetModelOnStoppedSession(t *testing.T) {
 	m, _ := NewManagerAt("")
 	m.st.Sessions = []*Session{{ID: "s1"}}
-	if msg := m.SetModel("s1", "claude-haiku-5-5"); msg != "gilt ab dem nächsten Start" {
+	if msg := m.SetModel("s1", "claude-haiku-5-5"); msg != "applies on the next start" {
 		t.Fatalf("message %q", msg)
 	}
 	if m.find("s1").Model != "claude-haiku-5-5" {

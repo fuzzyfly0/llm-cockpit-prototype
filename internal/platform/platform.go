@@ -51,14 +51,14 @@ func OpenIDE(ide, dir, target string) error {
 
 func resolveIDE(ide string) (string, error) {
 	if ide == "" {
-		return "", errors.New("keine IDE konfiguriert")
+		return "", errors.New("no IDE configured")
 	}
 	bin, err := exec.LookPath(ide)
 	if err != nil && (ide == "idea" || ide == "idea64") {
 		bin = FindIntelliJ()
 	}
 	if bin == "" {
-		return "", fmt.Errorf("IDE %q nicht gefunden (config.ide in state.json setzen)", ide)
+		return "", fmt.Errorf("IDE %q not found (set config.ide in state.json)", ide)
 	}
 	return bin, nil
 }
@@ -167,7 +167,7 @@ func OpenTerminal(dir string, args ...string) error {
 			}
 		}
 		if cmd == nil {
-			return errors.New("kein Terminal gefunden (TERMINAL setzen)")
+			return errors.New("no terminal found (set TERMINAL)")
 		}
 	}
 	cmd.Dir = dir
@@ -239,7 +239,7 @@ func GitDiff(dir string) (string, error) {
 	}
 	diff, err := git(dir, "diff", "HEAD")
 	if diff == "" {
-		diff = "(keine Änderungen an versionierten Dateien)"
+		diff = "(no changes in tracked files)"
 	}
 	return status + "\n\n" + diff, err
 }

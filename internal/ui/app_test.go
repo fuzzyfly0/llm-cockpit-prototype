@@ -102,19 +102,34 @@ func TestMouse(t *testing.T) {
 	run(t, a, a.gitAllCmd()) // both folders are no git repos: one group
 	a.View()
 
-	// Row 0 is the group header "Ohne git-Repo", rows 1-2 the first
+	// Row 0 is the group header "No git repository", rows 1-2 the first
 	// session, rows 3-4 the second; screen rows are one lower (border).
-	if len(a.groups()) != 1 || a.groups()[0].label != "Ohne git-Repo" {
+	if len(a.groups()) != 1 || a.groups()[0].label != "No git repository" {
 		t.Fatalf("groups %+v", a.groups())
 	}
 	send(t, a, click(5, 1)) // header: no selection change
 	if a.sel != 0 {
 		t.Fatalf("click on header changed selection to %d", a.sel)
 	}
+	// A click selects the session and focuses the list (blue border), so the
+	// arrow keys continue there; typing goes to the message field.
 	send(t, a, click(5, 4))
-	if a.sel != 1 || a.cur.Name != "zwei" || a.focus != focusInput {
+	if a.sel != 1 || a.cur.Name != "zwei" || a.focus != focusList {
 		t.Fatalf("click on session: sel=%d cur=%q focus=%d", a.sel, a.cur.Name, a.focus)
 	}
+	if out := a.View(); !strings.Contains(out, "\x1b[94m╭") && !strings.Contains(out, "94m") {
+		t.Log("note: accent colour not detectable in test output")
+	}
+	send(t, a, special(tea.KeyUp))
+	if a.cur.Name != "eins" || a.focus != focusList {
+		t.Fatalf("↑ after click: cur=%q focus=%d", a.cur.Name, a.focus)
+	}
+	send(t, a, special(tea.KeyDown))
+	typeText(t, a, "hi")
+	if a.focus != focusInput || a.input.Value() != "hi" || a.cur.Name != "zwei" {
+		t.Fatalf("typing after click: focus=%d input=%q cur=%q", a.focus, a.input.Value(), a.cur.Name)
+	}
+	a.input.SetValue("")
 	send(t, a, tea.MouseMsg{X: 5, Y: 3, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelUp})
 	if a.sel != 0 {
 		t.Fatalf("wheel up over list: sel=%d", a.sel)
@@ -171,7 +186,7 @@ func TestTypingGoesToMessageField(t *testing.T) {
 		t.Fatalf("focus=%d options=%+v", a.focus, a.pick.options)
 	}
 	run(t, a, a.choosePick(len(a.pick.options)-1)) // "Anderer Ordner …"
-	if a.focus != focusNewDir || !strings.HasPrefix(a.input.Prompt, "Neue Session") {
+	if a.focus != focusNewDir || !strings.HasPrefix(a.input.Prompt, "New session") {
 		t.Fatalf("focus=%d prompt=%q", a.focus, a.input.Prompt)
 	}
 	send(t, a, special(tea.KeyEsc))
@@ -183,16 +198,16 @@ func TestTypingGoesToMessageField(t *testing.T) {
 func TestCommandPalette(t *testing.T) {
 	a, mgr := newWith(t, 140, 40, "palette")
 	send(t, a, keys("/"))
-	if !a.paletteOpen() || !strings.Contains(ansiStrip(a.View()), "/neu") {
+	if !a.paletteOpen() || !strings.Contains(ansiStrip(a.View()), "/new") {
 		t.Fatal("palette not shown after /")
 	}
-	typeText(t, a, "modell")
-	if m := a.paletteMatches(); len(m) != 1 || m[0].name != "modell" {
+	typeText(t, a, "model")
+	if m := a.paletteMatches(); len(m) != 1 || m[0].name != "model" {
 		t.Fatalf("filter: %+v", m)
 	}
 	send(t, a, special(tea.KeyEnter))
 	if a.focus != focusPick || a.input.Value() != "" {
-		t.Fatalf("modell: focus=%d input=%q", a.focus, a.input.Value())
+		t.Fatalf("model: focus=%d input=%q", a.focus, a.input.Value())
 	}
 	for i := 0; i < 3; i++ {
 		send(t, a, special(tea.KeyDown))
@@ -218,6 +233,75 @@ func TestCommandPalette(t *testing.T) {
 	send(t, a, special(tea.KeyEsc))
 	if a.focus != focusInput {
 		t.Fatalf("after help: focus=%d", a.focus)
+	}
+}
+
+// Claude Code's own commands appear in the list, marked "claude ▸", and
+// are sent to Claude including their arguments.
+func TestClaudeCommandsInPalette(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(statePath, []byte(`{"claude_commands":["compact","context","__internal"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mgr, _ := core.NewManagerAt(statePath)
+	t.Cleanup(mgr.StopAll)
+	a := New(mgr)
+	send(t, a, tea.WindowSizeMsg{Width: 140, Height: 40})
+
+	send(t, a, keys("/"))
+	out := ansiStrip(a.View())
+	if !strings.Contains(out, "/compact") || !strings.Contains(out, "claude ▸") || strings.Contains(out, "__internal") {
+		t.Fatalf("claude commands not listed:\n%s", out)
+	}
+	typeText(t, a, "compact focus on the API")
+	// The exact name comes first, before "view" whose label mentions compact.
+	m := a.paletteMatches()
+	if len(m) != 2 || !m[0].claude || m[0].name != "compact" || m[1].name != "view" {
+		t.Fatalf("matches %+v", m)
+	}
+	// Without a session the command cannot be sent; with one it is sent.
+	send(t, a, special(tea.KeyEnter))
+	if !strings.Contains(a.status, "create a session first") {
+		t.Fatalf("status %q", a.status)
+	}
+	// The sent text is the full input incl. arguments.
+	a.input.SetValue("/compact focus on the API")
+	if got := a.paletteQuery(); got != "compact" {
+		t.Fatalf("query %q", got)
+	}
+}
+
+func TestSettings(t *testing.T) {
+	a, mgr := newWith(t, 140, 40, "einstellungen")
+	a.runAction("settings")
+	if a.focus != focusPick || !strings.Contains(ansiStrip(a.View()), "IDE command: idea") {
+		t.Fatalf("settings not shown, focus=%d", a.focus)
+	}
+	// Free text: the session link.
+	for i, o := range a.pick.options {
+		if o.value == "link" {
+			run(t, a, a.choosePick(i))
+		}
+	}
+	if a.focus != focusSetting {
+		t.Fatalf("link: focus=%d", a.focus)
+	}
+	a.input.SetValue("https://company.atlassian.net/browse/")
+	send(t, a, special(tea.KeyEnter))
+	if c := mgr.Config(); c.SessionLink != "https://company.atlassian.net/browse/" || a.focus != focusInput || a.input.Prompt != "› " {
+		t.Fatalf("link %q focus=%d prompt=%q", c.SessionLink, a.focus, a.input.Prompt)
+	}
+	// Choice: the permission mode.
+	a.runAction("settings")
+	run(t, a, a.choosePick(1)) // Permission mode
+	for i, o := range a.pick.options {
+		if o.value == "plan" {
+			run(t, a, a.choosePick(i))
+		}
+	}
+	if mgr.Config().PermissionMode != "plan" {
+		t.Fatalf("permission mode %q", mgr.Config().PermissionMode)
 	}
 }
 
@@ -282,7 +366,7 @@ func TestCtrlCClearsThenQuits(t *testing.T) {
 		t.Fatalf("first ctrl+c should only clear: %q", a.input.Value())
 	}
 	_, cmd = a.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-	if cmd != nil || !strings.Contains(a.status, "Nochmal ctrl+c") {
+	if cmd != nil || !strings.Contains(a.status, "press ctrl+c again") {
 		t.Fatalf("second ctrl+c should arm: %q", a.status)
 	}
 	_, cmd = a.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
@@ -300,16 +384,16 @@ func TestTabsWithAltNumbers(t *testing.T) {
 	if a.tab != tabNotes || a.focus != focusNotes {
 		t.Fatalf("alt+3: tab=%d focus=%d", a.tab, a.focus)
 	}
-	typeText(t, a, "Notiz")
+	typeText(t, a, "note")
 	send(t, a, special(tea.KeyEsc)) // saves and returns
-	if s, _ := mgr.Get(a.cur.ID); s.Notes != "Notiz" || a.focus != focusInput || a.tab != tabHistory {
+	if s, _ := mgr.Get(a.cur.ID); s.Notes != "note" || a.focus != focusInput || a.tab != tabHistory {
 		t.Fatalf("notes %q focus=%d tab=%d", s.Notes, a.focus, a.tab)
 	}
-	if !strings.Contains(ansiStrip(a.View()), "Notizen ✎") {
+	if !strings.Contains(ansiStrip(a.View()), "Notes ✎") {
 		t.Fatal("notes marker missing in the tab bar")
 	}
 	send(t, a, alt('4'))
-	if a.tab != tabPins || !strings.Contains(ansiStrip(a.View()), "Noch keine Pins") {
+	if a.tab != tabPins || !strings.Contains(ansiStrip(a.View()), "No pins yet") {
 		t.Fatalf("alt+4: tab=%d", a.tab)
 	}
 }
@@ -321,7 +405,7 @@ func TestHintLineAndHeight(t *testing.T) {
 		if len(rows) != 30 {
 			t.Fatalf("width %d: view has %d rows", w, len(rows))
 		}
-		if last := rows[len(rows)-1]; !strings.Contains(last, "enter senden") {
+		if last := rows[len(rows)-1]; !strings.Contains(last, "enter send") {
 			t.Fatalf("width %d: hint line %q", w, last)
 		}
 	}
@@ -385,13 +469,13 @@ func TestFilesFollowSessionSwitch(t *testing.T) {
 // the old session's notes in the editor and saved them into the next one.
 func TestNotesAndPinsFollowSessionSwitch(t *testing.T) {
 	a, mgr := newWith(t, 140, 30, "eins", "zwei")
-	mgr.SetNotes(a.sessions[1].ID, "Notizen von zwei")
+	mgr.SetNotes(a.sessions[1].ID, "notes of two")
 	pinned := core.Message{UUID: "u1", Kind: core.KindAssistant, Text: "x"}
 	mgr.TogglePin(a.sessions[1].ID, "u1", pinLabel(pinned))
 	a.refresh()
 
 	send(t, a, alt('3')) // Notizen of "eins"
-	typeText(t, a, "Notizen von eins")
+	typeText(t, a, "notes of one")
 	send(t, a, special(tea.KeyShiftTab)) // to the session list (from the right panel back)
 	if a.focus != focusList && a.focus != focusInput {
 		t.Fatalf("focus %d", a.focus)
@@ -399,12 +483,12 @@ func TestNotesAndPinsFollowSessionSwitch(t *testing.T) {
 	a.focus = focusList
 	_, cmd := a.handlePanelKey(special(tea.KeyDown)) // just iterate to "zwei"
 	run(t, a, cmd)
-	if a.cur.Name != "zwei" || a.notes.Value() != "Notizen von zwei" {
+	if a.cur.Name != "zwei" || a.notes.Value() != "notes of two" {
 		t.Fatalf("editor shows %q for %q", a.notes.Value(), a.cur.Name)
 	}
 	s1, _ := mgr.Get(a.sessions[0].ID)
 	s2, _ := mgr.Get(a.sessions[1].ID)
-	if s1.Notes != "Notizen von eins" || s2.Notes != "Notizen von zwei" {
+	if s1.Notes != "notes of one" || s2.Notes != "notes of two" {
 		t.Fatalf("saved notes: eins=%q zwei=%q", s1.Notes, s2.Notes)
 	}
 	// Pins tab shows the pins of the selected session.
@@ -415,7 +499,7 @@ func TestNotesAndPinsFollowSessionSwitch(t *testing.T) {
 	a.focus = focusList
 	_, cmd = a.handlePanelKey(special(tea.KeyUp))
 	run(t, a, cmd)
-	if out := ansiStrip(a.View()); a.cur.Name != "eins" || !strings.Contains(out, "Noch keine Pins") {
+	if out := ansiStrip(a.View()); a.cur.Name != "eins" || !strings.Contains(out, "No pins yet") {
 		t.Fatalf("pins of eins not shown for %q:\n%s", a.cur.Name, out)
 	}
 }
@@ -423,7 +507,7 @@ func TestNotesAndPinsFollowSessionSwitch(t *testing.T) {
 func TestSessionLink(t *testing.T) {
 	a, _ := newWith(t, 120, 30, "PROJ-123")
 	a.runAction("link")
-	if !strings.Contains(a.status, "kein Link konfiguriert") {
+	if !strings.Contains(a.status, "no link configured") {
 		t.Fatalf("status %q", a.status)
 	}
 }
@@ -461,21 +545,21 @@ func TestStreamingRender(t *testing.T) {
 	send(t, a, tea.WindowSizeMsg{Width: 100, Height: 60})
 	a.cur = core.Session{Messages: []core.Message{
 		{Kind: core.KindUser, Text: "Wie viele Dateien?"},
-		{Kind: core.KindThinking, Text: "nachgedacht (1.5 s)", Detail: "Erst die Dateien zählen."},
+		{Kind: core.KindThinking, Text: "thought (1.5 s)", Detail: "Erst die Dateien zählen."},
 		{Kind: core.KindTool, Tool: "Glob", Text: "Glob *", Detail: "pattern: *"},
-		{Kind: core.KindResult, Text: "a.go (+2 Zeilen)", Detail: "a.go\nb.go\nc.go"},
+		{Kind: core.KindResult, Text: "a.go (+2 lines)", Detail: "a.go\nb.go\nc.go"},
 		{Kind: core.KindTool, Tool: "Edit", Text: "Edit x.go", File: "x.go", Detail: "- alt\n+ neu"},
-		{Kind: core.KindResult, Diff: true, Text: "1 Zeile hinzugefügt, 1 entfernt", Detail: "    1 -  alt\n    1 +  neu"},
-		{Kind: core.KindDenied, Text: "PowerShell go test  – vom Rechte-Modus nicht erlaubt"},
-		{Kind: core.KindTurn, Text: "fertig · 1.0 s · 2 Schritte"},
+		{Kind: core.KindResult, Diff: true, Text: "1 line added, 1 removed", Detail: "    1 -  alt\n    1 +  neu"},
+		{Kind: core.KindDenied, Text: "PowerShell go test  – not allowed by the permission mode"},
+		{Kind: core.KindTurn, Text: "done · 1.0 s · 2 steps"},
 		{Kind: core.KindAssistant, Text: "Im Ordner", Partial: true},
 	}}
 	a.renderMessages()
 	out := ansi.Strip(a.vp.View())
 	for _, want := range []string{
-		"> Wie viele Dateien?", "✻ nachgedacht (1.5 s)", "Erst die Dateien zählen.", "⏺ Glob(*)", "pattern: *",
-		"⎿  a.go", "c.go", "⏺ Update(x.go)", "⎿  1 Zeile hinzugefügt, 1 entfernt", "1 -  alt", "1 +  neu",
-		"⛔ verweigert: PowerShell go test", "✓ fertig", "⏺ Im Ordner▌",
+		"> Wie viele Dateien?", "✻ thought (1.5 s)", "Erst die Dateien zählen.", "⏺ Glob(*)", "pattern: *",
+		"⎿  a.go", "c.go", "⏺ Update(x.go)", "⎿  1 line added, 1 removed", "1 -  alt", "1 +  neu",
+		"⛔ denied: PowerShell go test", "✓ done", "⏺ Im Ordner▌",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
@@ -495,7 +579,7 @@ func TestPinAnyEntryAndJump(t *testing.T) {
 	// Pin a tool call and a turn summary (neither is an assistant answer).
 	a.cur.Messages = []core.Message{
 		{UUID: "u1", Kind: core.KindTool, Tool: "Bash", Text: "Bash go test", Detail: "$ go test"},
-		{Kind: core.KindTurn, Text: "fertig · 1.0 s"},
+		{Kind: core.KindTurn, Text: "done · 1.0 s"},
 	}
 	a.focus = focusMessages
 	for _, i := range []int{0, 1} {
@@ -506,7 +590,7 @@ func TestPinAnyEntryAndJump(t *testing.T) {
 		}
 	}
 	s, _ := mgr.Get(id)
-	if len(s.Pins) != 2 || s.Pins[0].Excerpt != "⏺ Bash go test" || s.Pins[1].Excerpt != "✓ fertig · 1.0 s" {
+	if len(s.Pins) != 2 || s.Pins[0].Excerpt != "⏺ Bash go test" || s.Pins[1].Excerpt != "✓ done · 1.0 s" {
 		t.Fatalf("pins %+v", s.Pins)
 	}
 	a.cur.Pins = s.Pins
@@ -554,7 +638,7 @@ func TestModelPickerAndUsage(t *testing.T) {
 		UpdatedAt: now,
 	}, now, leftW)
 	got := ansi.Strip(strings.Join(lines, "\n"))
-	for _, want := range []string{"5 Std", " 26%", "↺ 14:30", "7 Tage", " 58%", "↺ Fr 10:00", "in 2 Std 30 Min"} {
+	for _, want := range []string{"5h", " 26%", "↺ 14:30", "7 days", " 58%", "↺ Fri 10:00", "in 2h 30m"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("usage missing %q:\n%s", want, got)
 		}
@@ -593,8 +677,8 @@ func TestCopyText(t *testing.T) {
 		{core.Message{Kind: core.KindAssistant, Text: "Antwort"}, "Antwort"},
 		{core.Message{Kind: core.KindTool, Tool: "Bash", Text: "Bash go test", Detail: "# Tests\n$ go test ./..."}, "go test ./..."},
 		{core.Message{Kind: core.KindResult, Text: "zeile (+50 Zeilen)", Detail: long}, long},
-		{core.Message{Kind: core.KindThinking, Text: "nachgedacht", Detail: "Gedanke"}, "Gedanke"},
-		{core.Message{Kind: core.KindTurn, Text: "fertig"}, "fertig"},
+		{core.Message{Kind: core.KindThinking, Text: "thought", Detail: "Gedanke"}, "Gedanke"},
+		{core.Message{Kind: core.KindTurn, Text: "done"}, "done"},
 	}
 	for _, tt := range tests {
 		if got := copyText(tt.m); got != tt.want {
@@ -629,10 +713,10 @@ func TestViewCycleWithOneKey(t *testing.T) {
 	steps := []struct {
 		name, mustHave, mustNot string
 	}{
-		{"normal", "… +27 Zeilen", "ende"},
-		{"alles", "ende", "… +"},
-		{"kompakt", "… +30 Zeilen", "ende"},
-		{"normal", "… +27 Zeilen", "ende"},
+		{"normal", "… +27 lines", "ende"},
+		{"all", "ende", "… +"},
+		{"compact", "… +30 lines", "ende"},
+		{"normal", "… +27 lines", "ende"},
 	}
 	for i, st := range steps {
 		if i > 0 {
@@ -642,7 +726,7 @@ func TestViewCycleWithOneKey(t *testing.T) {
 		if a.viewName() != st.name || !strings.Contains(out, st.mustHave) || strings.Contains(out, st.mustNot) {
 			t.Fatalf("step %d: view=%s\n%s", i, a.viewName(), out)
 		}
-		if i > 0 && !strings.Contains(a.status, "Ansicht: "+st.name) {
+		if i > 0 && !strings.Contains(a.status, "View: "+st.name) {
 			t.Fatalf("status does not show %q: %q", st.name, a.status)
 		}
 	}
@@ -663,10 +747,10 @@ func TestCopyNotes(t *testing.T) {
 	if a.focus != focusNotes {
 		t.Fatalf("ctrl+y left the editor: focus=%d", a.focus)
 	}
-	if strings.HasPrefix(a.status, "Kopieren fehlgeschlagen") {
+	if strings.HasPrefix(a.status, "Copy failed") {
 		t.Skip("no clipboard:", a.status)
 	}
-	if a.status != "Notizen kopiert (2 Zeilen)" {
+	if a.status != "notes copied (2 lines)" {
 		t.Fatalf("status %q", a.status)
 	}
 	if got, _ := clipboard.ReadAll(); strings.ReplaceAll(got, "\r\n", "\n") != "Zeile 1\nZeile 2" {
@@ -684,7 +768,7 @@ func TestLongResultIsClippedAndExpands(t *testing.T) {
 		{Kind: core.KindResult, Text: "zeile (+30 Zeilen)", Detail: long},
 	}}
 	a.renderMessages()
-	if out := ansi.Strip(a.vp.View()); strings.Contains(out, "ende") || !strings.Contains(out, "… +27 Zeilen") {
+	if out := ansi.Strip(a.vp.View()); strings.Contains(out, "ende") || !strings.Contains(out, "… +27 lines") {
 		t.Fatalf("not clipped:\n%s", out)
 	}
 	a.focus, a.msgCursor = focusMessages, 1

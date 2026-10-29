@@ -25,7 +25,7 @@ type picker struct {
 }
 
 var modelOptions = []pickOption{
-	{"Standard (Claude-Einstellung)", ""},
+	{"Default (Claude setting)", ""},
 	{"Opus 5.5", "claude-opus-5-5"},
 	{"Sonnet 5.5", "claude-sonnet-5-5"},
 	{"Haiku 5.5", "claude-haiku-5-5"},
@@ -33,7 +33,7 @@ var modelOptions = []pickOption{
 }
 
 var effortOptions = []pickOption{
-	{"Standard (Claude-Einstellung)", ""},
+	{"Default (Claude setting)", ""},
 	{"low", "low"},
 	{"medium", "medium"},
 	{"high", "high"},
@@ -98,7 +98,7 @@ func (a *Model) handlePickKey(key string) (tea.Model, tea.Cmd) {
 }
 
 func (a *Model) renderPick(w int) string {
-	lines := []string{bold.Render(a.pick.title) + dim.Render("  (enter wählen, esc abbrechen)")}
+	lines := []string{bold.Render(a.pick.title) + dim.Render("  (enter select, esc cancel)")}
 	for i, o := range a.pick.options {
 		line := ansi.Truncate("  "+o.label, w, "…")
 		if i == a.pick.sel {
@@ -124,7 +124,7 @@ func bar(frac float64, w int) string {
 		dim.Render(strings.Repeat("░", w-full))
 }
 
-var weekdays = []string{"So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"}
+var weekdays = []string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
 
 // resetText formats when a usage window resets: the time today, otherwise
 // weekday and time.
@@ -133,7 +133,7 @@ func resetText(t, now time.Time) string {
 		return ""
 	}
 	if !t.After(now) {
-		return "jetzt"
+		return "now"
 	}
 	t = t.Local()
 	if t.Sub(now) < 24*time.Hour && t.Day() == now.Local().Day() {
@@ -149,12 +149,12 @@ func untilText(t, now time.Time) string {
 	}
 	h, m := int(d.Hours()), int(d.Minutes())%60
 	if h >= 24 {
-		return fmt.Sprintf("in %d T %d Std", h/24, h%24)
+		return fmt.Sprintf("in %dd %dh", h/24, h%24)
 	}
 	if h > 0 {
-		return fmt.Sprintf("in %d Std %d Min", h, m)
+		return fmt.Sprintf("in %dh %dm", h, m)
 	}
-	return fmt.Sprintf("in %d Min", m)
+	return fmt.Sprintf("in %dm", m)
 }
 
 // usageLines renders the account usage for the bottom of the session list.
@@ -171,13 +171,13 @@ func usageLines(l core.Limits, now time.Time, w int) []string {
 	}
 	lines := []string{
 		dim.Render(strings.Repeat("─", w)),
-		row("5 Std", l.FiveHour),
-		row("7 Tage", l.SevenDay),
+		row("5h", l.FiveHour),
+		row("7 days", l.SevenDay),
 	}
 	if l.Status != "" && l.Status != "allowed" {
-		lines = append(lines, errStyle.Render(ansi.Truncate("Limit: "+l.Status, w, "…")))
+		lines = append(lines, errStyle.Render(ansi.Truncate("limit: "+l.Status, w, "…")))
 	} else if u := untilText(l.FiveHour.ResetsAt, now); u != "" {
-		lines = append(lines, dim.Render(ansi.Truncate("5-Std-Fenster neu "+u, w, "…")))
+		lines = append(lines, dim.Render(ansi.Truncate("5h window resets "+u, w, "…")))
 	}
 	return lines
 }
@@ -188,10 +188,10 @@ func contextText(s core.Session) string {
 		return ""
 	}
 	if s.ContextWindow == 0 {
-		return "Kontext " + shortTokens(s.ContextTokens)
+		return "context " + shortTokens(s.ContextTokens)
 	}
 	frac := float64(s.ContextTokens) / float64(s.ContextWindow)
-	return fmt.Sprintf("Kontext %s %s/%s %.0f%%", bar(frac, 6),
+	return fmt.Sprintf("context %s %s/%s %.0f%%", bar(frac, 6),
 		shortTokens(s.ContextTokens), shortTokens(s.ContextWindow), frac*100)
 }
 
@@ -216,5 +216,5 @@ func modelText(s core.Session) string {
 	if s.ActiveModel != "" {
 		return s.ActiveModel
 	}
-	return "Standard-Modell"
+	return "default model"
 }

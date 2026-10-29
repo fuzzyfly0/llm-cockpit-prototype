@@ -119,7 +119,7 @@ func ReadPreview(path string) (string, error) {
 	n, _ := f.Read(buf)
 	buf = buf[:n]
 	if bytes.IndexByte(buf, 0) >= 0 {
-		return "(Binärdatei)", nil
+		return "(binary file)", nil
 	}
 	text := strings.ReplaceAll(string(buf), "\t", "    ")
 	text = strings.ReplaceAll(text, "\r\n", "\n")
@@ -129,7 +129,7 @@ func ReadPreview(path string) (string, error) {
 		fmt.Fprintf(&b, "%5d  %s\n", i+1, l)
 	}
 	if n == len(buf) && n == 256*1024 {
-		b.WriteString("\n… (gekürzt)")
+		b.WriteString("\n… (truncated)")
 	}
 	return b.String(), nil
 }
@@ -138,7 +138,7 @@ func ReadPreview(path string) (string, error) {
 func GitDiffFile(dir, rel string) (string, error) {
 	out, err := git(dir, "diff", "HEAD", "--", rel)
 	if err == nil && out == "" {
-		out = "(keine Änderungen gegenüber HEAD – neue oder unveränderte Datei)"
+		out = "(no changes against HEAD – new or unchanged file)"
 	}
 	return out, err
 }

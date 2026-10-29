@@ -119,7 +119,7 @@ func clip(text string, n int) ([]string, int) {
 }
 
 func moreLine(prefix string, n int) string {
-	return prefix + dim.Render(fmt.Sprintf("… +%d Zeilen (enter / ctrl+o zeigt alles)", n))
+	return prefix + dim.Render(fmt.Sprintf("… +%d lines (enter / ctrl+o shows all)", n))
 }
 
 // colorDiff colors "- " / "+ " lines as removed/added text.
@@ -237,7 +237,7 @@ func (a *Model) renderMessage(m core.Message, prevTool string, selected, expande
 		// Long file contents are summarised like Claude Code does.
 		if prevTool == "Read" && !expanded {
 			n := len(strings.Split(text, "\n"))
-			return gutter + resultPipe + dim.Render(fmt.Sprintf("%d Zeilen gelesen", n))
+			return gutter + resultPipe + dim.Render(fmt.Sprintf("read %d lines", n))
 		}
 		n := resultLines
 		if !a.details {
@@ -245,7 +245,7 @@ func (a *Model) renderMessage(m core.Message, prevTool string, selected, expande
 		}
 		lines, more := clip(text, limit(n))
 		style := dim
-		if strings.HasPrefix(m.Text, "Fehler:") {
+		if strings.HasPrefix(m.Text, "Error:") {
 			style = errStyle
 		}
 		var out []string
@@ -295,7 +295,7 @@ func (a *Model) renderMessage(m core.Message, prevTool string, selected, expande
 		return gutter + turnStyle.Render(ansi.Truncate("✓ "+m.Text, w-2, "…"))
 
 	case core.KindDenied:
-		return wrap(gutter+errStyle.Render("⛔ verweigert: "), indent+"   ", m.Text, width)
+		return wrap(gutter+errStyle.Render("⛔ denied: "), indent+"   ", m.Text, width)
 
 	default:
 		return wrap(gutter+infoStyle.Render("● "), indent+"  ", infoStyle.Render(m.Text), width)
