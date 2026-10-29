@@ -596,6 +596,10 @@ func (a *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, cmd
 
 	case focusNotes:
+		if key == "ctrl+y" {
+			a.status = a.copyNotes(a.notes.Value())
+			return a, nil
+		}
 		if key == "esc" {
 			if s, ok := a.selected(); ok {
 				a.mgr.SetNotes(s.ID, a.notes.Value())
@@ -759,6 +763,8 @@ func (a *Model) handleNav(key string) (tea.Model, tea.Cmd) {
 		} else {
 			a.status = "Session im Terminal geöffnet und hier gestoppt"
 		}
+	case "Y":
+		a.status = a.copyNotes(s.Notes)
 	case "o":
 		a.focus = focusNotes
 		a.notes.SetValue(s.Notes)
@@ -888,6 +894,17 @@ func (a *Model) pinTarget() (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// copyNotes copies the complete notes and returns a status text.
+func (a *Model) copyNotes(notes string) string {
+	if strings.TrimSpace(notes) == "" {
+		return "keine Notizen zum Kopieren"
+	}
+	if err := platform.CopyToClipboard(notes); err != nil {
+		return "Kopieren fehlgeschlagen: " + err.Error()
+	}
+	return fmt.Sprintf("Notizen kopiert (%d Zeilen)", strings.Count(strings.TrimRight(notes, "\n"), "\n")+1)
 }
 
 // copyTarget is the entry under the cursor, or the last Claude answer when
@@ -1105,7 +1122,11 @@ func (a *Model) renderRight(w int) string {
 	case focusOverlay:
 		return bold.Render(a.overlayT) + "\n" + a.overlay.View()
 	case focusNotes:
-		return bold.Render("Notizen – "+s.Name) + dim.Render("  (esc speichert)") + "\n" + a.notes.View()
+		head := bold.Render("Notizen – "+s.Name) + dim.Render("  (esc speichert · ctrl+y kopiert alles)")
+		if a.status != "" {
+			head += "  " + infoStyle.Render(a.status)
+		}
+		return ansi.Truncate(head, w, "…") + "\n" + a.notes.View()
 	case focusPick:
 		return a.renderPick(w)
 	case focusPins:
@@ -1176,7 +1197,7 @@ var helpLine = map[focus]string{
 	focusNewDir:      "Ordner für die neue Session · enter weiter · esc abbrechen",
 	focusNewName:     "Name der Session · enter starten · esc abbrechen",
 	focusNewWorktree: "Name für Worktree und Branch, frei wählbar (z. B. login-fix, PROJ-123, feature/export) · enter anlegen · esc abbrechen",
-	focusNotes:       "esc speichert die Notizen",
+	focusNotes:       "esc speichert die Notizen · ctrl+y kopiert alle Notizen",
 	focusPins:        "↑↓ wählen · enter zur Stelle springen · x entfernen · esc zurück",
 	focusOverlay:     "↑↓/pgup/pgdn scrollen · esc schließen",
 	focusConfirm:     "y bestätigen · andere Taste abbrechen",
@@ -1212,7 +1233,8 @@ Verlauf
   c / f      auf ⏺-Zeile mit Datei: in der IDE öffnen / Diff in der IDE
   p          gewählten Eintrag pinnen / entpinnen (in der Liste: letzte Antwort)
   P          Pins anzeigen, enter springt zur Stelle
-  o          Notizen bearbeiten (esc speichert)
+  o          Notizen bearbeiten (esc speichert, ctrl+y kopiert alles)
+  Y          Notizen der Session kopieren
   pgup/pgdn  Verlauf scrollen
 
 Dateien (d)

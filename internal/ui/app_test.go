@@ -372,6 +372,33 @@ func TestCopyToClipboard(t *testing.T) {
 	}
 }
 
+func TestCopyNotes(t *testing.T) {
+	mgr, _ := core.NewManagerAt("")
+	id, err := mgr.Create("notizen", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr.StopAll()
+	mgr.SetNotes(id, "Zeile 1\nZeile 2")
+	a := New(mgr)
+	send(t, a, tea.WindowSizeMsg{Width: 120, Height: 30})
+	send(t, a, special(tea.KeyEsc))
+	send(t, a, keys("o"))
+	send(t, a, tea.KeyMsg{Type: tea.KeyCtrlY})
+	if a.focus != focusNotes {
+		t.Fatalf("ctrl+y left the editor: focus=%d", a.focus)
+	}
+	if strings.HasPrefix(a.status, "Kopieren fehlgeschlagen") {
+		t.Skip("no clipboard:", a.status)
+	}
+	if a.status != "Notizen kopiert (2 Zeilen)" {
+		t.Fatalf("status %q", a.status)
+	}
+	if got, _ := clipboard.ReadAll(); strings.ReplaceAll(got, "\r\n", "\n") != "Zeile 1\nZeile 2" {
+		t.Fatalf("clipboard %q", got)
+	}
+}
+
 func TestLongResultIsClippedAndExpands(t *testing.T) {
 	mgr, _ := core.NewManagerAt("")
 	a := New(mgr)
