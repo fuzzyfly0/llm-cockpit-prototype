@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -130,6 +131,66 @@ func TestStreamingRender(t *testing.T) {
 }
 
 func ansiStrip(s string) string { return ansi.Strip(s) }
+
+// run executes a command and feeds its message back, like the Bubble Tea loop.
+func run(t *testing.T, a *Model, cmd tea.Cmd) {
+	t.Helper()
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			send(t, a, msg)
+		}
+	}
+}
+
+func TestFileView(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "src"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, "src", "main.go"), []byte("package main\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "readme.md"), []byte("# hi\n"), 0o644)
+
+	mgr, _ := core.NewManagerAt("")
+	defer mgr.StopAll()
+	if _, err := mgr.Create("files", dir); err != nil {
+		t.Fatal(err)
+	}
+	a := New(mgr)
+	send(t, a, tea.WindowSizeMsg{Width: 120, Height: 30})
+
+	_, cmd := a.handleNav("d")
+	run(t, a, cmd)
+	if a.focus != focusFiles || a.files.total != 2 {
+		t.Fatalf("focus=%d total=%d", a.focus, a.files.total)
+	}
+	// Folders first, collapsed: "src/", then "readme.md".
+	if len(a.files.rows) != 2 || a.files.rows[0].node.name != "src" {
+		t.Fatalf("rows=%+v", a.files.rows)
+	}
+	send(t, a, special(tea.KeyEnter)) // expand src
+	if len(a.files.rows) != 3 {
+		t.Fatalf("after expand: %d rows", len(a.files.rows))
+	}
+	send(t, a, keys("j"))
+	_, cmd = a.handleFilesKey("enter") // preview src/main.go
+	run(t, a, cmd)
+	if a.focus != focusOverlay || !strings.Contains(a.overlay.View(), "package main") {
+		t.Fatalf("preview not shown: focus=%d\n%s", a.focus, a.overlay.View())
+	}
+	send(t, a, special(tea.KeyEsc))
+	if a.focus != focusFiles {
+		t.Fatalf("esc from preview should return to files, focus=%d", a.focus)
+	}
+	if !strings.Contains(a.View(), "readme.md") {
+		t.Fatal("file list not rendered")
+	}
+	send(t, a, keys("m")) // only changed: nothing in a plain dir
+	if len(a.files.rows) != 0 {
+		t.Fatalf("only changed: %d rows", len(a.files.rows))
+	}
+	send(t, a, special(tea.KeyEsc))
+	if a.focus != focusList {
+		t.Fatalf("esc should leave files, focus=%d", a.focus)
+	}
+}
 
 func TestCreateSessionFlow(t *testing.T) {
 	mgr, _ := core.NewManagerAt("")

@@ -42,6 +42,21 @@ type Message struct {
 	Text string
 	// Partial marks an assistant text that is still being streamed.
 	Partial bool
+	// File is the path a modifying tool call worked on (KindTool only).
+	File string
+}
+
+// TouchedFiles returns the files Claude modified in this session.
+func (s *Session) TouchedFiles() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range s.Messages {
+		if m.File != "" && !seen[m.File] {
+			seen[m.File] = true
+			out = append(out, m.File)
+		}
+	}
+	return out
 }
 
 type Pin struct {

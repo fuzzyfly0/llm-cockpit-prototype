@@ -37,8 +37,9 @@ func OpenURL(u string) error {
 	}
 }
 
-// OpenIDE runs the configured IDE launcher (e.g. "idea", "code") on dir.
-func OpenIDE(ide, dir string) error {
+// OpenIDE runs the configured IDE launcher (e.g. "idea", "code") on target,
+// which may be the project folder or a single file inside dir.
+func OpenIDE(ide, dir, target string) error {
 	if ide == "" {
 		return errors.New("keine IDE konfiguriert")
 	}
@@ -49,7 +50,7 @@ func OpenIDE(ide, dir string) error {
 	if bin == "" {
 		return fmt.Errorf("IDE %q nicht gefunden (config.ide in state.json setzen)", ide)
 	}
-	cmd := exec.Command(bin, dir)
+	cmd := exec.Command(bin, target)
 	cmd.Dir = dir
 	return cmd.Start()
 }

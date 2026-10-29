@@ -45,6 +45,7 @@ const (
 	focusPins
 	focusOverlay
 	focusConfirm
+	focusFiles
 )
 
 const leftW = 34
@@ -94,6 +95,11 @@ type Model struct {
 	git       map[string]platform.GitInfo
 	overlayT  string
 	showHelp  bool
+	// overlayRaw is the unclipped overlay text, re-fitted on resize.
+	overlayRaw string
+	// overlayBack is the view to return to when the overlay is closed.
+	overlayBack focus
+	files       fileView
 
 	vp      viewport.Model
 	overlay viewport.Model
@@ -178,7 +184,16 @@ func (a *Model) layout() {
 	a.notes.SetWidth(rightW)
 	a.notes.SetHeight(max(bodyH-1, 1))
 	a.input.Width = a.w - 6
+	a.overlay.SetContent(fitLines(a.overlayRaw, a.overlay.Width))
 	a.renderMessages()
+}
+
+func (a *Model) setOverlay(title, body string) {
+	a.overlayT = title
+	a.overlayRaw = body
+	a.overlay.SetContent(fitLines(body, a.overlay.Width))
+	a.overlay.GotoTop()
+	a.focus = focusOverlay
 }
 
 func (a *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -194,15 +209,19 @@ func (a *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.git[msg.dir] = msg.info
 		return a, nil
 	case tickMsg:
-		return a, tea.Batch(a.gitCmd(), tick())
+		cmds := []tea.Cmd{a.gitCmd(), tick()}
+		if a.focus == focusFiles {
+			cmds = append(cmds, filesCmd(a.files.dir))
+		}
+		return a, tea.Batch(cmds...)
+	case filesMsg:
+		a.applyFiles(msg)
+		return a, nil
 	case statusMsg:
 		a.status = string(msg)
 		return a, nil
 	case overlayMsg:
-		a.overlayT = msg.title
-		a.overlay.SetContent(msg.body)
-		a.overlay.GotoTop()
-		a.focus = focusOverlay
+		a.setOverlay(msg.title, msg.body)
 		return a, a.gitCmd()
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
@@ -220,7 +239,7 @@ type button struct{ label, key string }
 
 var buttons = []button{
 	{"+ Neu", "n"}, {"Schreiben", "enter"}, {"Start", "r"}, {"Stop", "x"},
-	{"Pin", "p"}, {"Pins", "P"}, {"Notizen", "o"}, {"Diff", "f"}, {"Pull", "u"},
+	{"Dateien", "d"}, {"Pin", "p"}, {"Pins", "P"}, {"Notizen", "o"}, {"Diff", "f"}, {"Pull", "u"},
 	{"Explorer", "e"}, {"IDE", "c"}, {"GitHub", "g"}, {"Terminal", "t"},
 	{"Entfernen", "ctrl+d"}, {"?", "?"}, {"Beenden", "q"},
 }
@@ -261,6 +280,9 @@ func (a *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			delta = -3
 		}
 		switch {
+		case inRight && a.focus == focusFiles:
+			v := &a.files
+			v.sel = max(min(v.sel+delta, len(v.rows)-1), 0)
 		case inLeft && (a.focus == focusList || a.focus == focusMessages):
 			a.focus = focusList
 			if delta < 0 {
@@ -293,6 +315,21 @@ func (a *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return a.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
 		}
 		return a, nil
+	case focusFiles:
+		if inRight && row >= 1 {
+			idx := a.files.top + row - 1
+			if idx < len(a.files.rows) {
+				if idx == a.files.sel {
+					return a, a.activateFile()
+				}
+				a.files.sel = idx
+			}
+			return a, nil
+		}
+		if msg.Y == a.h-1 || msg.Y >= bodyH+2 {
+			return a, nil
+		}
+		a.focus = focusList
 	case focusInput:
 		if msg.Y <= bodyH+1 {
 			a.input.Blur()
@@ -429,11 +466,18 @@ func (a *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
+	case focusFiles:
+		return a.handleFilesKey(key)
+
 	case focusOverlay:
 		switch key {
 		case "esc", "q":
-			a.focus = focusList
+			a.focus = a.overlayBack
+			a.overlayBack = focusList
 			a.showHelp = false
+			if a.focus == focusFiles {
+				return a, filesCmd(a.files.dir)
+			}
 		default:
 			a.overlay, cmd = a.overlay.Update(msg)
 		}
@@ -497,10 +541,8 @@ func (a *Model) handleNav(key string) (tea.Model, tea.Cmd) {
 		return a, a.input.Focus()
 	case "?":
 		a.showHelp = true
-		a.overlayT = "Tastenkürzel"
-		a.overlay.SetContent(helpText)
-		a.overlay.GotoTop()
-		a.focus = focusOverlay
+		a.overlayBack = focusList
+		a.setOverlay("Tastenkürzel", helpText)
 	}
 	if !has {
 		return a, nil
@@ -559,7 +601,9 @@ func (a *Model) handleNav(key string) (tea.Model, tea.Cmd) {
 	case "e":
 		a.report(platform.OpenFolder(s.Dir), "Explorer geöffnet")
 	case "c":
-		a.report(platform.OpenIDE(a.mgr.Config().IDE, s.Dir), "IDE gestartet")
+		a.report(platform.OpenIDE(a.mgr.Config().IDE, s.Dir, s.Dir), "IDE gestartet")
+	case "d":
+		return a, a.openFiles()
 	case "g":
 		u := a.git[s.Dir].WebURL
 		if u == "" {
@@ -573,6 +617,7 @@ func (a *Model) handleNav(key string) (tea.Model, tea.Cmd) {
 		}
 		dir, pull := s.Dir, key == "u"
 		a.status = "git läuft…"
+		a.overlayBack = focusList
 		return a, func() tea.Msg {
 			if pull {
 				out, err := platform.GitPull(dir)
@@ -762,6 +807,8 @@ func (a *Model) renderRight(w int) string {
 			dim.Render("n oder [+ Neu] startet eine Session in einem Ordner.\n? zeigt alle Tastenkürzel.")
 	}
 	switch a.focus {
+	case focusFiles:
+		return a.renderFiles(w)
 	case focusOverlay:
 		return bold.Render(a.overlayT) + "\n" + a.overlay.View()
 	case focusNotes:
@@ -826,6 +873,7 @@ var helpLine = map[focus]string{
 	focusPins:     "↑↓ wählen · enter zur Stelle springen · x entfernen · esc zurück",
 	focusOverlay:  "↑↓/pgup/pgdn scrollen · esc schließen",
 	focusConfirm:  "y bestätigen · andere Taste abbrechen",
+	focusFiles:    "↑↓ wählen · enter/Klick öffnen · →← auf/zu · m nur Änderungen · f diff · c IDE · e explorer · r neu laden · esc zurück",
 }
 
 const helpText = `Sessions
@@ -844,6 +892,16 @@ Verlauf, Pins, Notizen
   P          Pins anzeigen, enter springt zur Stelle
   o          Notizen bearbeiten (esc speichert)
   pgup/pgdn  Verlauf scrollen
+
+Dateien (d)
+  ↑/↓        Datei wählen
+  enter      Ordner auf/zu bzw. Datei-Vorschau
+  →/←        Ordner aufklappen / zuklappen
+  m          nur geänderte Dateien zeigen (M A ? D, ✎ = von Claude bearbeitet)
+  f          diff dieser Datei
+  c          Datei in der IDE öffnen
+  e          Ordner im Explorer öffnen
+  r          neu laden
 
 Git & System
   f          git diff anzeigen

@@ -72,7 +72,7 @@ func messagesFrom(ev streamEvent) []Message {
 				out = append(out, Message{UUID: ev.UUID, Kind: KindUser, Text: b.Text})
 			}
 		case b.Type == "tool_use":
-			out = append(out, Message{UUID: ev.UUID, Kind: KindTool, Text: toolSummary(b)})
+			out = append(out, Message{UUID: ev.UUID, Kind: KindTool, Text: toolSummary(b), File: toolFile(b)})
 		case b.Type == "tool_result":
 			out = append(out, Message{UUID: ev.UUID, Kind: KindResult, Text: resultSummary(b)})
 		}
@@ -102,6 +102,24 @@ func resultSummary(b contentBlock) string {
 		s = "(leer)"
 	}
 	return s
+}
+
+// toolFile returns the file a modifying tool (Edit, Write, …) worked on.
+func toolFile(b contentBlock) string {
+	switch b.Name {
+	case "Edit", "MultiEdit", "Write", "NotebookEdit":
+	default:
+		return ""
+	}
+	var in struct {
+		FilePath     string `json:"file_path"`
+		NotebookPath string `json:"notebook_path"`
+	}
+	_ = json.Unmarshal(b.Input, &in)
+	if in.FilePath != "" {
+		return in.FilePath
+	}
+	return in.NotebookPath
 }
 
 func toolSummary(b contentBlock) string {
