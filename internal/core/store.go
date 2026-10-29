@@ -12,6 +12,8 @@ type Config struct {
 	PermissionMode string `json:"permission_mode"`
 	// IDE is the command used to open a folder, e.g. "idea", "idea64", "code".
 	IDE string `json:"ide"`
+	// ExtraArgs are appended to every claude invocation, e.g. ["--model", "sonnet"].
+	ExtraArgs []string `json:"extra_args,omitempty"`
 }
 
 type state struct {

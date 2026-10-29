@@ -20,24 +20,45 @@ type process struct {
 }
 
 // Manager owns all sessions and their Claude processes. All methods are safe
-// for concurrent use; OnChange is called (without the lock held) whenever
-// session state changed in the background.
+// for concurrent use; subscribers registered with Subscribe are notified
+// asynchronously whenever session state changed.
 type Manager struct {
-	mu       sync.Mutex
-	st       *state
-	path     string // state file; empty disables persistence (tests)
-	OnChange func()
+	mu     sync.Mutex
+	st     *state
+	path   string        // state file; empty disables persistence (tests)
+	notify chan struct{} // coalesced change notifications
 }
 
 func NewManager() (*Manager, error) {
 	p, err := defaultStatePath()
 	if err != nil {
-		st := &state{}
-		applyDefaults(&st.Config)
-		return &Manager{st: st}, err
+		m, _ := NewManagerAt("")
+		return m, err
 	}
-	st, err := loadState(p)
-	return &Manager{st: st, path: p}, err
+	return NewManagerAt(p)
+}
+
+// NewManagerAt uses the given state file; an empty path keeps everything in
+// memory (used by tests).
+func NewManagerAt(path string) (*Manager, error) {
+	m := &Manager{notify: make(chan struct{}, 1), path: path, st: &state{}}
+	if path == "" {
+		applyDefaults(&m.st.Config)
+		return m, nil
+	}
+	var err error
+	m.st, err = loadState(path)
+	return m, err
+}
+
+// Subscribe calls fn on its own goroutine after changes. Notifications never
+// block the caller (which may be the UI loop itself) and bursts are coalesced.
+func (m *Manager) Subscribe(fn func()) {
+	go func() {
+		for range m.notify {
+			fn()
+		}
+	}()
 }
 
 func (m *Manager) Config() Config {
@@ -47,8 +68,9 @@ func (m *Manager) Config() Config {
 }
 
 func (m *Manager) changed() {
-	if m.OnChange != nil {
-		m.OnChange()
+	select {
+	case m.notify <- struct{}{}:
+	default:
 	}
 }
 
@@ -141,6 +163,7 @@ func (m *Manager) start(s *Session) error {
 	if s.ClaudeID != "" {
 		args = append(args, "--resume", s.ClaudeID)
 	}
+	args = append(args, cfg.ExtraArgs...)
 	cmd := exec.Command(cfg.ClaudeBin, args...)
 	cmd.Dir = s.Dir
 	stdin, err := cmd.StdinPipe()

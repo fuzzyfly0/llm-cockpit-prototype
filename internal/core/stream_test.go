@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+	"time"
 )
 
 func parse(t *testing.T, line string) streamEvent {
@@ -66,7 +68,7 @@ func TestLoadStateFillsEmptyConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Config{ClaudeBin: "claude", PermissionMode: "acceptEdits", IDE: "code"}
-	if st.Config != want {
+	if !reflect.DeepEqual(st.Config, want) {
 		t.Fatalf("got %+v, want %+v", st.Config, want)
 	}
 }
@@ -75,6 +77,24 @@ func TestLoadStateMissingFileIsNotAnError(t *testing.T) {
 	st, err := loadState(filepath.Join(t.TempDir(), "missing.json"))
 	if err != nil || st.Config.ClaudeBin != "claude" {
 		t.Fatalf("got %+v, %v", st.Config, err)
+	}
+}
+
+// Regression: change notifications used to call into the UI synchronously,
+// deadlocking when triggered from the UI loop (e.g. creating a session).
+func TestChangedDoesNotBlockWithoutReader(t *testing.T) {
+	m := &Manager{st: &state{}, notify: make(chan struct{}, 1)}
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 100; i++ {
+			m.changed()
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("changed() blocked")
 	}
 }
 

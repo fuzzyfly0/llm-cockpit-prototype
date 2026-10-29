@@ -22,7 +22,7 @@ func main() {
 	}
 
 	p := tea.NewProgram(ui.New(mgr), tea.WithAltScreen())
-	mgr.OnChange = func() { p.Send(ui.ChangedMsg{}) }
+	mgr.Subscribe(func() { p.Send(ui.ChangedMsg{}) })
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
