@@ -63,6 +63,7 @@ var commands = []command{
 	{"ide", "Open the project in the IDE", "", "c", false},
 	{"explorer", "Open the folder in the file manager", "", "e", false},
 	{"session", "Search and switch sessions", "ctrl+k", "switch", false},
+	{"layout", "Split view: 1 · 2 side by side · 2 stacked · 3 · 4 sessions", "ctrl+\\", "layout", false},
 	{"link", "Open the session link (config session_link + name)", "", "link", false},
 	{"github", "Open GitHub (repository or search)", "", "g", false},
 	{"terminal", "Continue the session in a terminal", "", "t", false},
@@ -179,6 +180,9 @@ func (a *Model) runAction(action string) (tea.Model, tea.Cmd) {
 		return a, a.openSwitcher()
 	case action == "settings":
 		a.openSettings()
+		return a, nil
+	case action == "layout":
+		a.cycleLayout()
 		return a, nil
 	case action == "link":
 		s, ok := a.selected()
@@ -445,10 +449,22 @@ func (a *Model) handleGlobalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		return a, a.newSession(), true
 	case "ctrl+k":
 		return a, a.openSwitcher(), true
+	case "ctrl+\\":
+		a.cycleLayout()
+		return a, nil, true
+	case "alt+left", "alt+right":
+		// Split view: move between panes (like Windows Terminal).
+		if a.split() {
+			return a, a.movePane(map[bool]int{true: -1, false: 1}[msg.String() == "alt+left"], 0), true
+		}
+		return a, nil, false
 	case "alt+up", "alt+down":
 		d := 1
 		if msg.String() == "alt+up" {
 			d = -1
+		}
+		if a.split() {
+			return a, a.movePane(0, d), true
 		}
 		if a.moveSelection(d) {
 			a.refresh()
@@ -686,6 +702,14 @@ func (a *Model) handlePanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+// switchHint names the keys for moving between sessions or panes.
+func (a *Model) switchHint() string {
+	if a.split() {
+		return "alt+arrows pane · ctrl+\\ layout"
+	}
+	return "alt+↑↓ session · ctrl+\\ split"
+}
+
 // hintLine is the single line below the message field.
 func (a *Model) hintLine() string {
 	var h string
@@ -697,9 +721,9 @@ func (a *Model) hintLine() string {
 		case a.paletteOpen():
 			h = "type to filter · ↑↓ select · enter run · esc close"
 		case a.cur.Status == core.StatusWorking:
-			h = "esc / ctrl+c interrupt · / commands · ? help · tab history · alt+↑↓ session · ctrl+o view"
+			h = "esc / ctrl+c interrupt · / commands · ? help · tab history · " + a.switchHint() + " · ctrl+o view"
 		default:
-			h = "enter send · / commands · ? help · ↑ last message · tab history · alt+↑↓ session · ctrl+o view"
+			h = "enter send · / commands · ? help · ↑ last message · tab history · " + a.switchHint() + " · ctrl+o view"
 		}
 	case focusMessages:
 		h = "↑↓ entry · enter expand · y copy · p pin · o open file in IDE · d diff in IDE · esc back"

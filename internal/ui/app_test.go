@@ -504,6 +504,81 @@ func TestNotesAndPinsFollowSessionSwitch(t *testing.T) {
 	}
 }
 
+func TestSplitView(t *testing.T) {
+	a, _ := newWith(t, 200, 50, "eins", "zwei", "drei", "vier")
+	run(t, a, a.gitAllCmd())
+	checkFrame := func(step string) {
+		t.Helper()
+		rows := strings.Split(a.View(), "\n")
+		if len(rows) != 50 {
+			t.Fatalf("%s: view has %d rows", step, len(rows))
+		}
+		for i, r := range rows {
+			if w := ansi.StringWidth(r); w > 200 {
+				t.Fatalf("%s: row %d is %d wide", step, i, w)
+			}
+		}
+	}
+
+	send(t, a, tea.KeyMsg{Type: tea.KeyCtrlBackslash}) // 2 side by side
+	if !a.split() || len(a.panes) != 2 || a.panes[0] != a.cur.ID || a.panes[1] == "" {
+		t.Fatalf("2 panes: %v", a.panes)
+	}
+	checkFrame("2 side by side")
+	out := ansiStrip(a.View())
+	if !strings.Contains(out, "② zwei") {
+		t.Fatalf("second pane header missing:\n%s", out)
+	}
+	for i := 0; i < 3; i++ { // 2 stacked, 3, 4
+		send(t, a, tea.KeyMsg{Type: tea.KeyCtrlBackslash})
+		checkFrame(layouts[a.layoutIdx].name)
+	}
+	if layouts[a.layoutIdx].panes != 4 || len(a.paneRects()) != 4 {
+		t.Fatalf("layout %q with %d panes", layouts[a.layoutIdx].name, len(a.paneRects()))
+	}
+	// Every session is shown once and marked in the list.
+	seen := map[string]bool{}
+	for _, id := range a.panes {
+		seen[id] = true
+	}
+	if len(seen) != 4 || !strings.Contains(out, "①") {
+		t.Fatalf("panes %v", a.panes)
+	}
+
+	// alt+→ moves to pane 2; the selected session follows the pane.
+	send(t, a, tea.KeyMsg{Type: tea.KeyRight, Alt: true})
+	if a.activePane != 1 || a.cur.ID != a.panes[1] {
+		t.Fatalf("alt+right: active=%d cur=%q panes=%v", a.activePane, a.cur.Name, a.panes)
+	}
+	// A click into pane 3 (bottom left) activates it.
+	rs := a.paneRects()
+	send(t, a, click(leftW+2+rs[2].x+5, rs[2].y+3))
+	if a.activePane != 2 || a.cur.ID != a.panes[2] {
+		t.Fatalf("click: active=%d", a.activePane)
+	}
+	// Choosing a session that another pane shows swaps the two panes.
+	other := a.panes[0]
+	before := a.cur.ID
+	for i, s := range a.sessions {
+		if s.ID == other {
+			a.sel = i
+		}
+	}
+	a.refresh()
+	if a.panes[2] != other || a.panes[0] != before {
+		t.Fatalf("swap: panes=%v", a.panes)
+	}
+
+	// A small window falls back to one pane.
+	send(t, a, tea.WindowSizeMsg{Width: 100, Height: 24})
+	if a.split() {
+		t.Fatal("4 panes in a 100×24 window")
+	}
+	if rows := strings.Split(a.View(), "\n"); len(rows) != 24 {
+		t.Fatalf("small window: %d rows", len(rows))
+	}
+}
+
 func TestSessionLink(t *testing.T) {
 	a, _ := newWith(t, 120, 30, "PROJ-123")
 	a.runAction("link")

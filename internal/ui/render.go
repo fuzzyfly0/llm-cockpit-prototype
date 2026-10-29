@@ -146,7 +146,7 @@ func relTo(dir, p string) string {
 
 // renderMessage draws one history entry. prevTool is the tool of the
 // preceding tool call (for result summaries); expanded shows all lines.
-func (a *Model) renderMessage(m core.Message, prevTool string, selected, expanded bool, width int) string {
+func (a *Model) renderMessage(m core.Message, dir, prevTool string, selected, expanded bool, width int) string {
 	// The first two columns stay free for the selection bar (markSelected).
 	gutter := "  "
 	indent := "  "
@@ -183,7 +183,7 @@ func (a *Model) renderMessage(m core.Message, prevTool string, selected, expande
 	case core.KindTool:
 		arg := strings.TrimSpace(strings.TrimPrefix(m.Text, m.Tool))
 		if m.File != "" {
-			arg = relTo(a.cur.Dir, m.File)
+			arg = relTo(dir, m.File)
 		}
 		head := gutter + dotTool + toolName.Render(displayName(m.Tool))
 		if arg != "" && m.Tool != "TodoWrite" {

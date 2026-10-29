@@ -198,7 +198,10 @@ func (a *Model) applyFiles(msg filesMsg) {
 
 // filesHeight is the number of file rows: the panel minus tab bar, info
 // line and the file view's own title line.
-func (a *Model) filesHeight() int { return max(a.bodyHeight()-3, 1) }
+func (a *Model) filesHeight() int {
+	_, h := a.activeInner()
+	return max(h-3, 1)
+}
 
 func (a *Model) renderFiles(w int) string {
 	v := &a.files

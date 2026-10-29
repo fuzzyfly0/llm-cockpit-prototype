@@ -126,6 +126,12 @@ type Model struct {
 	quitArmed  time.Time
 	// notesFor is the session whose notes are in the notes editor.
 	notesFor string
+	// Split view (panes.go): layout index, session per pane, the active
+	// pane and the viewports of the other panes.
+	layoutIdx  int
+	panes      []string
+	activePane int
+	paneVPs    map[int]*viewport.Model
 	// settingKey is the text setting being edited (see configui.go).
 	settingKey string
 	// Session search (ctrl+k): the query is typed into the message field,
@@ -279,7 +285,9 @@ func (a *Model) refresh() {
 	if a.msgCursor >= len(a.cur.Messages) {
 		a.msgCursor = len(a.cur.Messages) - 1
 	}
+	a.syncPanes(a.cur.ID)
 	a.renderMessages()
+	a.renderPanes()
 }
 
 func (a *Model) gitCmd() tea.Cmd {
@@ -294,14 +302,18 @@ func (a *Model) gitCmd() tea.Cmd {
 func (a *Model) layout() {
 	rightW := a.w - leftW - 4
 	bodyH := a.bodyHeight()
-	a.vp.Width, a.vp.Height = rightW, max(bodyH-2, 1)
+	// The active pane (the whole right area without split view) holds the
+	// history, files and notes; popups always use the whole area.
+	iw, ih := a.activeInner()
+	a.vp.Width, a.vp.Height = iw, max(ih-2, 1)
 	a.overlay.Width, a.overlay.Height = rightW, max(bodyH-1, 1)
-	a.notes.SetWidth(rightW)
-	a.notes.SetHeight(max(bodyH-2, 1))
+	a.notes.SetWidth(iw)
+	a.notes.SetHeight(max(ih-2, 1))
 	a.input.SetWidth(max(a.w-4, 10))
 	a.input.SetHeight(a.inputHeight())
 	a.overlay.SetContent(fitLines(a.overlayRaw, a.overlay.Width))
 	a.renderMessages()
+	a.renderPanes()
 }
 
 func (a *Model) setOverlay(title, body string) {
@@ -507,6 +519,8 @@ func (a *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			}
 		case a.focus == focusOverlay:
 			a.overlay.SetYOffset(a.overlay.YOffset + delta)
+		case inRight && a.split() && !a.popupOpen() && a.scrollPane(msg.X-leftW-2, msg.Y, delta):
+			// an inactive pane scrolled
 		case a.tab == tabFiles:
 			v := &a.files
 			v.sel = max(min(v.sel+delta, len(v.rows)-1), 0)
@@ -549,6 +563,15 @@ func (a *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return a.runCommand(m[i])
 		}
 		return a, nil
+	}
+	// Split view: a click into another pane activates it; inside the active
+	// pane, rows and columns count from that pane's content.
+	if inRight && a.split() {
+		r, c, handled, cmd := a.clickPane(msg.X-leftW-2, msg.Y)
+		if handled {
+			return a, cmd
+		}
+		row, col = r, c
 	}
 
 	switch {
@@ -1003,25 +1026,21 @@ func (a *Model) moveCursor(d int) {
 	a.renderMessages()
 }
 
-func (a *Model) renderMessages() {
-	width := a.vp.Width
-	if width <= 4 {
-		return
-	}
-	// Follow new output only if the user has not scrolled up.
-	follow := a.stickBottom || a.vp.AtBottom() || a.vp.TotalLineCount() <= a.vp.Height
-	a.stickBottom = false
+// renderEntries draws the history of s for a pane of the given width; the
+// entry at cursor (-1: none) is marked. It returns the content and the first
+// line of every entry.
+func (a *Model) renderEntries(s core.Session, width, cursor int, expanded func(int) bool) (string, []int) {
 	var b strings.Builder
-	a.offsets = a.offsets[:0]
+	offsets := make([]int, 0, len(s.Messages))
 	line := 0
 	prevTool := ""
-	msgs := a.cur.Messages
+	msgs := s.Messages
 	keys := core.MessageKeys(msgs)
 	for i, m := range msgs {
-		a.offsets = append(a.offsets, line)
-		selected := a.focus == focusMessages && i == a.msgCursor
-		block := a.renderMessage(m, prevTool, selected, a.transcript || a.expanded[i], width)
-		if a.cur.IsPinned(keys[i]) {
+		offsets = append(offsets, line)
+		selected := i == cursor
+		block := a.renderMessage(m, s.Dir, prevTool, selected, expanded(i), width)
+		if s.IsPinned(keys[i]) {
 			first, rest, hasRest := strings.Cut(block, "\n")
 			block = first + pinStyle.Render(" ★")
 			if hasRest {
@@ -1048,7 +1067,24 @@ func (a *Model) renderMessages() {
 		b.WriteString("\n")
 		line += lipgloss.Height(block)
 	}
-	a.vp.SetContent(b.String())
+	return b.String(), offsets
+}
+
+func (a *Model) renderMessages() {
+	width := a.vp.Width
+	if width <= 4 {
+		return
+	}
+	// Follow new output only if the user has not scrolled up.
+	follow := a.stickBottom || a.vp.AtBottom() || a.vp.TotalLineCount() <= a.vp.Height
+	a.stickBottom = false
+	cursor := -1
+	if a.focus == focusMessages {
+		cursor = a.msgCursor
+	}
+	var content string
+	content, a.offsets = a.renderEntries(a.cur, width, cursor, func(i int) bool { return a.transcript || a.expanded[i] })
+	a.vp.SetContent(content)
 	if a.focus == focusMessages && a.msgCursor >= 0 && a.msgCursor < len(a.offsets) {
 		off := a.offsets[a.msgCursor]
 		if off < a.vp.YOffset || off >= a.vp.YOffset+a.vp.Height {
@@ -1081,8 +1117,13 @@ func (a *Model) View() string {
 	}
 	left := box(a.focus == focusList).Width(leftW).Height(bodyH).MaxHeight(bodyH + 2).
 		Render(a.renderList(bodyH))
-	right := box(rightFocused).Width(rightW).Height(bodyH).MaxHeight(bodyH + 2).
-		Render(a.renderRight(rightW))
+	var right string
+	if a.split() && !a.popupOpen() {
+		right = a.renderSplit(rightFocused)
+	} else {
+		right = box(rightFocused).Width(rightW).Height(bodyH).MaxHeight(bodyH + 2).
+			Render(a.renderRight(rightW))
+	}
 	inputFocused := a.focus == focusInput || a.focus == focusNewDir || a.focus == focusNewName || a.focus == focusNewWorktree || a.focus == focusSetting
 	input := box(inputFocused).Width(a.w - 2).Render(a.input.View())
 	return lipgloss.JoinVertical(lipgloss.Left,
@@ -1127,6 +1168,9 @@ func (a *Model) renderSessions(h int) string {
 				} else {
 					branch = dim.Render("  ⎇ " + gi.Branch)
 				}
+			}
+			if p := a.paneOf(s.ID); p != "" {
+				mark = lipgloss.NewStyle().Foreground(accent).Render(p) // shown in pane p
 			}
 			title := ansi.Truncate(fmt.Sprintf("  %s %s %s", statusStyle(s.Status).Render(statusIcon(s.Status)), mark, s.Name)+branch, leftW, "…")
 			sub := s.Preview()
@@ -1268,7 +1312,10 @@ const helpText = `Writing (the message field always has the focus)
 
 Everywhere
   ctrl+k           search and switch sessions
-  alt+↑ / alt+↓    previous / next session
+  alt+↑ / alt+↓    previous / next session (in split view: move between panes)
+  ctrl+\           split view: 1 → 2 side by side → 2 stacked → 3 → 4 sessions;
+                   alt+arrows or a click switch the pane, the message field
+                   writes to the active (blue) pane, the list shows ①②③④
   ctrl+n           new session (known repository or folder; in git:
                    directly, a new worktree with its own branch, or an
                    existing one)
