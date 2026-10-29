@@ -41,6 +41,12 @@ type streamEvent struct {
 	Version        string      `json:"claude_code_version"`
 	MCPServers     []mcpServer `json:"mcp_servers"`
 	Status         *string     `json:"status"`
+	// rate_limit_event
+	RateLimitInfo json.RawMessage `json:"rate_limit_info"`
+	// result: per-model usage incl. the context window size
+	ModelUsage map[string]struct {
+		ContextWindow int `json:"contextWindow"`
+	} `json:"modelUsage"`
 }
 
 type usage struct {

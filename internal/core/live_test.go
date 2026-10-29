@@ -11,15 +11,19 @@ func TestLiveSession(t *testing.T) {
 	if os.Getenv("COCKPIT_LIVE") == "" {
 		t.Skip("set COCKPIT_LIVE=1 to run against the real claude CLI")
 	}
-	m := &Manager{st: &state{}, notify: make(chan struct{}, 1)}
-	applyDefaults(&m.st.Config)
-	m.st.Config.ExtraArgs = []string{"--model", "haiku"}
-
+	m, _ := NewManagerAt("")
 	id, err := m.Create("live", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer m.StopAll()
+	// Changing settings restarts the waiting session with the new options.
+	if msg := m.SetModel(id, "claude-haiku-5-5"); msg != "Session mit neuer Einstellung neu gestartet" {
+		t.Fatalf("SetModel: %s", msg)
+	}
+	if msg := m.SetEffort(id, "low"); msg != "Session mit neuer Einstellung neu gestartet" {
+		t.Fatalf("SetEffort: %s", msg)
+	}
 	if err := m.Send(id, "Antworte nur mit dem Wort: Pong"); err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +31,17 @@ func TestLiveSession(t *testing.T) {
 	for time.Now().Before(deadline) {
 		s, _ := m.Get(id)
 		if s.Status == StatusIdle && s.Preview() != "" {
-			t.Logf("preview=%q claude_id=%s cost=$%.4f", s.Preview(), s.ClaudeID, s.CostUSD)
+			t.Logf("preview=%q claude_id=%s cost=$%.4f model=%s context=%d/%d limits=%+v",
+				s.Preview(), s.ClaudeID, s.CostUSD, s.ActiveModel, s.ContextTokens, s.ContextWindow, m.Limits())
+			if s.ActiveModel != "claude-haiku-5-5" {
+				t.Errorf("model %q", s.ActiveModel)
+			}
+			if s.ContextTokens == 0 || s.ContextWindow == 0 {
+				t.Error("context not captured")
+			}
+			if m.Limits().UpdatedAt.IsZero() {
+				t.Error("no rate limit info received")
+			}
 			if s.ClaudeID == "" {
 				t.Error("no claude session id captured")
 			}

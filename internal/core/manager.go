@@ -125,7 +125,11 @@ func (m *Manager) ensureHistory(s *Session) {
 	}
 	s.historyLoaded = true
 	if s.ClaudeID != "" {
-		s.Messages = append(loadTranscript(s.ClaudeID), s.Messages...)
+		msgs, context := loadTranscript(s.ClaudeID)
+		s.Messages = append(msgs, s.Messages...)
+		if s.ContextTokens == 0 {
+			s.ContextTokens = context
+		}
 	}
 }
 
@@ -161,14 +165,7 @@ func (m *Manager) start(s *Session) error {
 	}
 	m.ensureHistory(s)
 	cfg := m.st.Config
-	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json",
-		"--verbose", "--include-partial-messages", "--forward-subagent-text",
-		"--permission-mode", cfg.PermissionMode}
-	if s.ClaudeID != "" {
-		args = append(args, "--resume", s.ClaudeID)
-	}
-	args = append(args, cfg.ExtraArgs...)
-	cmd := exec.Command(cfg.ClaudeBin, args...)
+	cmd := exec.Command(cfg.ClaudeBin, startArgs(cfg, s)...)
 	cmd.Dir = s.Dir
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -192,6 +189,25 @@ func (m *Manager) start(s *Session) error {
 	s.Activity = ""
 	go m.readLoop(s, p, stdout)
 	return nil
+}
+
+// startArgs builds the claude command line for a session. Session settings
+// come last so they override model/effort from config.extra_args.
+func startArgs(cfg Config, s *Session) []string {
+	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json",
+		"--verbose", "--include-partial-messages", "--forward-subagent-text",
+		"--permission-mode", cfg.PermissionMode}
+	if s.ClaudeID != "" {
+		args = append(args, "--resume", s.ClaudeID)
+	}
+	args = append(args, cfg.ExtraArgs...)
+	if s.Model != "" {
+		args = append(args, "--model", s.Model)
+	}
+	if s.Effort != "" {
+		args = append(args, "--effort", s.Effort)
+	}
+	return args
 }
 
 func (m *Manager) readLoop(s *Session, p *process, stdout io.Reader) {
@@ -241,6 +257,7 @@ func (m *Manager) handle(s *Session, ev streamEvent) {
 				s.ClaudeID = ev.SessionID
 				m.save()
 			}
+			s.ActiveModel = ev.Model
 			if s.proc != nil && !s.proc.initShown {
 				s.proc.initShown = true
 				s.Messages = append(s.Messages, Message{Kind: KindInfo, Text: initSummary(ev)})
@@ -258,7 +275,17 @@ func (m *Manager) handle(s *Session, ev streamEvent) {
 		if !ev.isSubagent() {
 			m.handleStream(s, ev.Event)
 		}
+	case "rate_limit_event":
+		if l, ok := parseLimits(ev.RateLimitInfo, time.Now()); ok {
+			m.st.Limits = l
+			m.save()
+		}
 	case "assistant":
+		if !ev.isSubagent() {
+			if c := contextFrom(ev); c > 0 {
+				s.ContextTokens = c
+			}
+		}
 		for _, msg := range messagesFrom(ev) {
 			if msg.Kind == KindAssistant && !msg.Sub && s.partial >= 0 && s.partial < len(s.Messages) {
 				// The complete block replaces its streamed preview.
@@ -290,6 +317,13 @@ func (m *Manager) handle(s *Session, ev streamEvent) {
 		// total_cost_usd is reported per process, so add it to the cost
 		// accumulated before this process was started.
 		s.CostUSD = s.costBase + ev.TotalCost
+		if mu, ok := ev.ModelUsage[s.ActiveModel]; ok && mu.ContextWindow > 0 {
+			s.ContextWindow = mu.ContextWindow
+		} else {
+			for _, mu := range ev.ModelUsage {
+				s.ContextWindow = max(s.ContextWindow, mu.ContextWindow)
+			}
+		}
 		for _, d := range ev.PermissionDenials {
 			s.Messages = append(s.Messages, Message{Kind: KindDenied, Text: denialText(d)})
 		}
@@ -391,6 +425,58 @@ func (m *Manager) Remove(id string) {
 	m.changed()
 }
 
+// Limits returns the last known account usage (shared by all sessions).
+func (m *Manager) Limits() Limits {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.st.Limits
+}
+
+// SetModel changes the model of a session; see applySettings.
+func (m *Manager) SetModel(id, model string) string {
+	m.mu.Lock()
+	defer m.changed()
+	defer m.mu.Unlock()
+	s := m.find(id)
+	if s == nil {
+		return "session nicht gefunden"
+	}
+	s.Model = model
+	return m.applySettings(s)
+}
+
+// SetEffort changes the effort level of a session; see applySettings.
+func (m *Manager) SetEffort(id, effort string) string {
+	m.mu.Lock()
+	defer m.changed()
+	defer m.mu.Unlock()
+	s := m.find(id)
+	if s == nil {
+		return "session nicht gefunden"
+	}
+	s.Effort = effort
+	return m.applySettings(s)
+}
+
+// applySettings saves changed start options. A waiting session is restarted
+// right away (resuming its conversation); a working one keeps running and
+// picks them up on its next start. It returns a status text for the UI.
+func (m *Manager) applySettings(s *Session) string {
+	m.save()
+	if s.proc == nil {
+		return "gilt ab dem nächsten Start"
+	}
+	if s.Status == StatusWorking {
+		return "gilt ab dem nächsten Start (Session arbeitet gerade; x stoppt, r startet neu)"
+	}
+	stopProc(s)
+	s.proc = nil
+	if err := m.start(s); err != nil {
+		return "Neustart fehlgeschlagen: " + err.Error()
+	}
+	return "Session mit neuer Einstellung neu gestartet"
+}
+
 func (m *Manager) SetNotes(id, notes string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -408,23 +494,23 @@ func (m *Manager) MarkRead(id string) {
 	}
 }
 
-// TogglePin pins or unpins the message with the given UUID; it reports
-// whether the message is pinned afterwards.
-func (m *Manager) TogglePin(id string, msg Message) bool {
+// TogglePin pins or unpins the entry with the given key (see MessageKeys);
+// it reports whether the entry is pinned afterwards.
+func (m *Manager) TogglePin(id, key, label string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s := m.find(id)
-	if s == nil || msg.UUID == "" {
+	if s == nil || key == "" {
 		return false
 	}
 	defer m.save()
 	for i, p := range s.Pins {
-		if p.UUID == msg.UUID {
+		if p.UUID == key {
 			s.Pins = append(s.Pins[:i], s.Pins[i+1:]...)
 			return false
 		}
 	}
-	s.Pins = append(s.Pins, Pin{UUID: msg.UUID, Excerpt: excerpt(msg.Text, 60)})
+	s.Pins = append(s.Pins, Pin{UUID: key, Excerpt: excerpt(label, 80)})
 	return true
 }
 

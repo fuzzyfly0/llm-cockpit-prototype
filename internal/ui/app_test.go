@@ -93,22 +93,47 @@ func TestMouse(t *testing.T) {
 		t.Fatalf("wheel up over list: sel=%d", a.sel)
 	}
 	// Click into the input box.
-	send(t, a, click(10, 30-3))
+	barTop := a.bodyHeight() + 5
+	send(t, a, click(10, barTop-2))
 	if a.focus != focusInput {
 		t.Fatalf("click on input: focus=%d", a.focus)
 	}
 	send(t, a, special(tea.KeyEsc))
-	// "[+ Neu]" is the first button in the bottom row.
-	send(t, a, click(2, 29))
+	// "[+ Neu]" is the first button of the bar.
+	send(t, a, click(2, barTop))
 	if a.focus != focusNewDir {
 		t.Fatalf("click on [+ Neu]: focus=%d", a.focus)
 	}
 	send(t, a, special(tea.KeyEsc))
-	// "[?]" opens the help.
-	x := strings.Index(ansiStrip(a.renderButtons()), "[?]")
-	send(t, a, click(x+1, 29))
-	if a.focus != focusOverlay {
-		t.Fatalf("click on [?] at x=%d: focus=%d", x, a.focus)
+	// Every button must be visible and clickable, also "[?]" at the end.
+	view := strings.Split(ansiStrip(a.View()), "\n")
+	if len(view) != 30 {
+		t.Fatalf("view has %d rows, want 30", len(view))
+	}
+	found := false
+	for r := barTop; r < len(view); r++ {
+		if x := strings.Index(view[r], "[?]"); x >= 0 {
+			send(t, a, click(x+1, r))
+			found = true
+		}
+	}
+	if !found || a.focus != focusOverlay {
+		t.Fatalf("[?] not found or not clickable (found=%v focus=%d)", found, a.focus)
+	}
+}
+
+func TestButtonBarWrapsOnNarrowScreens(t *testing.T) {
+	mgr, _ := core.NewManagerAt("")
+	a := New(mgr)
+	send(t, a, tea.WindowSizeMsg{Width: 80, Height: 30})
+	out := ansiStrip(a.View())
+	if rows := strings.Split(out, "\n"); len(rows) != 30 {
+		t.Fatalf("view has %d rows, want 30", len(rows))
+	}
+	for _, b := range buttons {
+		if !strings.Contains(out, "["+b.label+"]") {
+			t.Errorf("button %q not visible at width 80", b.label)
+		}
 	}
 }
 
@@ -162,6 +187,84 @@ func TestStreamingRender(t *testing.T) {
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestPinAnyEntryAndJump(t *testing.T) {
+	mgr, _ := core.NewManagerAt("")
+	id, err := mgr.Create("pins", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.StopAll()
+	a := New(mgr)
+	send(t, a, tea.WindowSizeMsg{Width: 120, Height: 40})
+	// Pin a tool call and a turn summary (neither is an assistant answer).
+	a.cur.Messages = []core.Message{
+		{UUID: "u1", Kind: core.KindTool, Tool: "Bash", Text: "Bash go test", Detail: "$ go test"},
+		{Kind: core.KindTurn, Text: "fertig · 1.0 s"},
+	}
+	a.focus = focusMessages
+	for _, i := range []int{0, 1} {
+		a.msgCursor = i
+		key := core.MessageKeys(a.cur.Messages)[i]
+		if !mgr.TogglePin(id, key, pinLabel(a.cur.Messages[i])) {
+			t.Fatalf("entry %d not pinned", i)
+		}
+	}
+	s, _ := mgr.Get(id)
+	if len(s.Pins) != 2 || s.Pins[0].Excerpt != "⏺ Bash go test" || s.Pins[1].Excerpt != "✓ fertig · 1.0 s" {
+		t.Fatalf("pins %+v", s.Pins)
+	}
+	a.cur.Pins = s.Pins
+	a.renderMessages()
+	if out := ansi.Strip(a.vp.View()); strings.Count(out, "★") != 2 {
+		t.Fatalf("stars missing:\n%s", out)
+	}
+	a.jumpTo(s.Pins[1].UUID)
+	if a.msgCursor != 1 || a.focus != focusMessages {
+		t.Fatalf("jump: cursor=%d focus=%d", a.msgCursor, a.focus)
+	}
+}
+
+func TestModelPickerAndUsage(t *testing.T) {
+	mgr, _ := core.NewManagerAt("")
+	id, err := mgr.Create("modell", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr.Stop(id)
+	defer mgr.StopAll()
+	a := New(mgr)
+	send(t, a, tea.WindowSizeMsg{Width: 140, Height: 40})
+	send(t, a, keys("M"))
+	if a.focus != focusPick || !strings.Contains(ansi.Strip(a.View()), "Haiku 5.5") {
+		t.Fatalf("picker not shown, focus=%d", a.focus)
+	}
+	send(t, a, keys("j"))
+	send(t, a, keys("j"))
+	send(t, a, keys("j")) // Haiku
+	send(t, a, special(tea.KeyEnter))
+	s, _ := mgr.Get(id)
+	if s.Model != "claude-haiku-5-5" {
+		t.Fatalf("model %q, status %q", s.Model, a.status)
+	}
+	if !strings.Contains(ansi.Strip(a.View()), "Haiku 5.5") {
+		t.Fatal("header does not show the model")
+	}
+
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.Local)
+	lines := usageLines(core.Limits{
+		FiveHour:  core.Window{Utilization: 0.26, ResetsAt: now.Add(2*time.Hour + 30*time.Minute)},
+		SevenDay:  core.Window{Utilization: 0.58, ResetsAt: time.Date(2026, 10, 30, 10, 0, 0, 0, time.Local)},
+		Status:    "allowed",
+		UpdatedAt: now,
+	}, now, leftW)
+	got := ansi.Strip(strings.Join(lines, "\n"))
+	for _, want := range []string{"5 Std", " 26%", "↺ 14:30", "7 Tage", " 58%", "↺ Fr 10:00", "in 2 Std 30 Min"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("usage missing %q:\n%s", want, got)
 		}
 	}
 }

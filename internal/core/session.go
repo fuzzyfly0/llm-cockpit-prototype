@@ -2,7 +2,12 @@
 // about Bubble Tea so that other frontends (e.g. an IDE bridge) can reuse it.
 package core
 
-import "strings"
+import (
+	"crypto/sha1"
+	"encoding/hex"
+	"fmt"
+	"strings"
+)
 
 type Status int
 
@@ -77,9 +82,35 @@ func (s *Session) TouchedFiles() []string {
 	return out
 }
 
+// Pin marks a history entry. UUID holds the entry's key (see MessageKeys);
+// for the first entry of a Claude message that is simply its UUID, which
+// keeps pins from older versions valid.
 type Pin struct {
 	UUID    string `json:"uuid"`
 	Excerpt string `json:"excerpt"`
+}
+
+// MessageKeys returns a stable key per message: the UUID (with "#n" for
+// further entries sharing it) or, for entries without UUID, a hash of kind
+// and text so they can be found again after reloading the transcript.
+func MessageKeys(msgs []Message) []string {
+	keys := make([]string, len(msgs))
+	seen := map[string]int{}
+	for i, m := range msgs {
+		if m.UUID == "" {
+			h := sha1.Sum([]byte(fmt.Sprintf("%d|%s", m.Kind, m.Text)))
+			keys[i] = "h:" + hex.EncodeToString(h[:8])
+			continue
+		}
+		n := seen[m.UUID]
+		seen[m.UUID] = n + 1
+		if n == 0 {
+			keys[i] = m.UUID
+		} else {
+			keys[i] = fmt.Sprintf("%s#%d", m.UUID, n)
+		}
+	}
+	return keys
 }
 
 // Session combines persisted fields (exported JSON tags) with runtime state.
@@ -91,6 +122,16 @@ type Session struct {
 	Notes    string  `json:"notes,omitempty"`
 	Pins     []Pin   `json:"pins,omitempty"`
 	CostUSD  float64 `json:"cost_usd,omitempty"`
+	// Model and Effort are passed as --model/--effort; empty = Claude default.
+	Model  string `json:"model,omitempty"`
+	Effort string `json:"effort,omitempty"`
+
+	// ActiveModel is the model reported by the running process.
+	ActiveModel string `json:"-"`
+	// ContextTokens is the size of the conversation sent with the last
+	// request; ContextWindow the model's maximum (0 = unknown).
+	ContextTokens int `json:"-"`
+	ContextWindow int `json:"-"`
 
 	Status   Status    `json:"-"`
 	Activity string    `json:"-"`

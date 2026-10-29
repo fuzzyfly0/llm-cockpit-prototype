@@ -130,15 +130,7 @@ func (a *Model) renderMessage(m core.Message, prevTool string, selected, expande
 		if m.Sub {
 			dot = dotSub
 		}
-		out := wrap(gutter+dot, indent+"  ", text, width)
-		if a.cur.IsPinned(m.UUID) {
-			first, rest, _ := strings.Cut(out, "\n")
-			out = first + pinStyle.Render(" ★")
-			if rest != "" {
-				out += "\n" + rest
-			}
-		}
-		return out
+		return wrap(gutter+dot, indent+"  ", text, width)
 
 	case core.KindTool:
 		arg := strings.TrimSpace(strings.TrimPrefix(m.Text, m.Tool))

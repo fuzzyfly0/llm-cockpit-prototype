@@ -180,7 +180,7 @@ func (a *Model) applyFiles(msg filesMsg) {
 	a.files.rebuild()
 }
 
-func (a *Model) filesHeight() int { return max(a.h-2-3-1-1, 1) }
+func (a *Model) filesHeight() int { return max(a.bodyHeight()-1, 1) }
 
 func (a *Model) renderFiles(w int) string {
 	v := &a.files

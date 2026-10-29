@@ -54,6 +54,7 @@ const (
 	focusOverlay
 	focusConfirm
 	focusFiles
+	focusPick
 )
 
 const leftW = 34
@@ -89,14 +90,17 @@ type Model struct {
 	sel      int
 	cur      core.Session
 	offsets  []int
-	// listStart is the first session shown in the list (for mouse hits).
+	// listStart is the first session shown in the list and listRows the
+	// number of screen rows it uses (for mouse hits).
 	listStart int
+	listRows  int
 	// stickBottom forces the next render to scroll to the newest message.
 	stickBottom bool
 	// details shows tool inputs and several result lines (v toggles);
 	// expanded holds entries shown completely (enter toggles).
 	details  bool
 	expanded map[int]bool
+	pick     picker
 
 	focus     focus
 	msgCursor int
@@ -244,7 +248,7 @@ func (a *Model) gitCmd() tea.Cmd {
 
 func (a *Model) layout() {
 	rightW := a.w - leftW - 4
-	bodyH := a.h - 2 - 3 - 1
+	bodyH := a.bodyHeight()
 	a.vp.Width, a.vp.Height = rightW, max(bodyH-2, 1)
 	a.overlay.Width, a.overlay.Height = rightW, max(bodyH-1, 1)
 	a.notes.SetWidth(rightW)
@@ -314,23 +318,58 @@ type button struct{ label, key string }
 
 var buttons = []button{
 	{"+ Neu", "n"}, {"Schreiben", "enter"}, {"Start", "r"}, {"Stop", "x"},
+	{"Modell", "M"}, {"Effort", "E"},
 	{"Dateien", "d"}, {"Pin", "p"}, {"Pins", "P"}, {"Notizen", "o"}, {"Diff", "f"}, {"Pull", "u"},
 	{"Explorer", "e"}, {"IDE", "c"}, {"GitHub", "g"}, {"Terminal", "t"},
 	{"Entfernen", "ctrl+d"}, {"?", "?"}, {"Beenden", "q"},
 }
 
-func (a *Model) renderButtons() string {
-	var parts []string
+// buttonRows wraps the button bar into as many rows as the width needs.
+func buttonRows(width int) [][]button {
+	var rows [][]button
+	var row []button
+	used := 0
 	for _, b := range buttons {
-		parts = append(parts, lipgloss.NewStyle().Foreground(accent).Render("["+b.label+"]"))
+		w := lipgloss.Width("[" + b.label + "]")
+		if len(row) > 0 && used+1+w > width {
+			rows = append(rows, row)
+			row, used = nil, 0
+		}
+		if len(row) > 0 {
+			used++
+		}
+		row = append(row, b)
+		used += w
 	}
-	return ansi.Truncate(strings.Join(parts, " "), a.w, "")
+	return append(rows, row)
 }
 
-// buttonAt returns the key of the button at column x of the button bar.
-func buttonAt(x int) (string, bool) {
+// barHeight is the number of rows below the input box.
+func (a *Model) barHeight() int { return len(buttonRows(a.w)) }
+
+// bodyHeight is the inner height of the two main panels.
+func (a *Model) bodyHeight() int { return max(a.h-2-3-a.barHeight(), 1) }
+
+func (a *Model) renderButtons() string {
+	var lines []string
+	for _, row := range buttonRows(a.w) {
+		var parts []string
+		for _, b := range row {
+			parts = append(parts, lipgloss.NewStyle().Foreground(accent).Render("["+b.label+"]"))
+		}
+		lines = append(lines, ansi.Truncate(strings.Join(parts, " "), a.w, ""))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// buttonAt returns the key of the button at column x of bar row r.
+func (a *Model) buttonAt(x, r int) (string, bool) {
+	rows := buttonRows(a.w)
+	if r < 0 || r >= len(rows) {
+		return "", false
+	}
 	pos := 0
-	for _, b := range buttons {
+	for _, b := range rows[r] {
 		w := lipgloss.Width("[" + b.label + "]")
 		if x >= pos && x < pos+w {
 			return b.key, true
@@ -344,7 +383,8 @@ func (a *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if a.w == 0 {
 		return a, nil
 	}
-	bodyH := a.h - 2 - 3 - 1
+	bodyH := a.bodyHeight()
+	barTop := bodyH + 5 // first row of the button bar
 	inLeft := msg.X <= leftW+1 && msg.Y <= bodyH+1
 	inRight := msg.X > leftW+1 && msg.Y <= bodyH+1
 	row := msg.Y - 1 // content row inside the panel borders
@@ -385,6 +425,13 @@ func (a *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			a.jumpTo(a.cur.Pins[a.pinSel].UUID)
 		}
 		return a, nil
+	case focusPick:
+		if inRight && row >= 1 {
+			a.choosePick(row - 1)
+		} else if !inRight {
+			a.focus = focusList
+		}
+		return a, nil
 	case focusNotes, focusOverlay:
 		if !inRight {
 			return a.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
@@ -401,7 +448,7 @@ func (a *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			}
 			return a, nil
 		}
-		if msg.Y == a.h-1 || msg.Y >= bodyH+2 {
+		if msg.Y >= bodyH+2 {
 			return a, nil
 		}
 		a.focus = focusList
@@ -415,7 +462,7 @@ func (a *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case inLeft && row >= 0:
 		idx := a.listStart + row/2
-		if idx < len(a.sessions) {
+		if row < a.listRows && idx < len(a.sessions) {
 			a.focus = focusList
 			if idx != a.sel {
 				a.sel = idx
@@ -441,8 +488,8 @@ func (a *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 	case msg.Y >= bodyH+2 && msg.Y <= bodyH+4:
 		return a.handleNav("i")
-	case msg.Y == a.h-1:
-		if key, ok := buttonAt(msg.X); ok {
+	case msg.Y >= barTop:
+		if key, ok := a.buttonAt(msg.X, msg.Y-barTop); ok {
 			return a.handleNav(key)
 		}
 	}
@@ -535,7 +582,7 @@ func (a *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.pinSel = min(a.pinSel+1, len(pins)-1)
 		case "x", "delete":
 			if a.pinSel < len(pins) {
-				a.mgr.TogglePin(a.cur.ID, core.Message{UUID: pins[a.pinSel].UUID})
+				a.mgr.TogglePin(a.cur.ID, pins[a.pinSel].UUID, "")
 				a.refresh()
 				a.pinSel = max(min(a.pinSel, len(a.cur.Pins)-1), 0)
 			}
@@ -548,6 +595,9 @@ func (a *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case focusFiles:
 		return a.handleFilesKey(key)
+
+	case focusPick:
+		return a.handlePickKey(key)
 
 	case focusOverlay:
 		switch key {
@@ -673,12 +723,13 @@ func (a *Model) handleNav(key string) (tea.Model, tea.Cmd) {
 		a.notes.SetValue(s.Notes)
 		return a, a.notes.Focus()
 	case "p":
-		msg, ok := a.pinTarget()
+		i, ok := a.pinTarget()
 		if !ok {
-			a.status = "keine Antwort zum Pinnen"
+			a.status = "nichts zum Pinnen (tab, Eintrag wählen, dann p)"
 			break
 		}
-		if a.mgr.TogglePin(s.ID, msg) {
+		key := core.MessageKeys(s.Messages)[i]
+		if a.mgr.TogglePin(s.ID, key, pinLabel(s.Messages[i])) {
 			a.status = "gepinnt"
 		} else {
 			a.status = "Pin entfernt"
@@ -686,7 +737,7 @@ func (a *Model) handleNav(key string) (tea.Model, tea.Cmd) {
 		a.refresh()
 	case "P":
 		if len(s.Pins) == 0 {
-			a.status = "keine Pins (p pinnt eine Antwort)"
+			a.status = "keine Pins (tab, Eintrag wählen, p pinnt ihn)"
 			break
 		}
 		a.pinSel = 0
@@ -701,6 +752,12 @@ func (a *Model) handleNav(key string) (tea.Model, tea.Cmd) {
 		a.report(platform.OpenIDE(a.mgr.Config().IDE, s.Dir, s.Dir), "IDE gestartet")
 	case "d":
 		return a, a.openFiles()
+	case "M":
+		id := s.ID
+		a.openPicker("Modell – "+s.Name, modelOptions, s.Model, func(v string) string { return a.mgr.SetModel(id, v) })
+	case "E":
+		id := s.ID
+		a.openPicker("Effort – "+s.Name, effortOptions, s.Effort, func(v string) string { return a.mgr.SetEffort(id, v) })
 	case "g":
 		u := a.git[s.Dir].WebURL
 		if u == "" {
@@ -775,31 +832,52 @@ func (a *Model) cursorFile() (string, bool) {
 	return f, true
 }
 
-// pinTarget is the message under the cursor, or the last assistant answer.
-func (a *Model) pinTarget() (core.Message, bool) {
+// pinTarget returns the index of the entry under the cursor, or of the last
+// finished Claude answer when the session list has focus.
+func (a *Model) pinTarget() (int, bool) {
 	msgs := a.cur.Messages
 	if a.focus == focusMessages && a.msgCursor >= 0 && a.msgCursor < len(msgs) {
-		m := msgs[a.msgCursor]
-		return m, m.UUID != "" && m.Kind == core.KindAssistant
+		return a.msgCursor, !msgs[a.msgCursor].Partial
 	}
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Kind == core.KindAssistant && msgs[i].UUID != "" {
-			return msgs[i], true
+		if msgs[i].Kind == core.KindAssistant && !msgs[i].Partial {
+			return i, true
 		}
 	}
-	return core.Message{}, false
+	return 0, false
 }
 
-func (a *Model) jumpTo(uuid string) {
-	for i, m := range a.cur.Messages {
-		if m.UUID == uuid && m.Kind == core.KindAssistant {
+// pinLabel is the text shown in the pin list for an entry.
+func pinLabel(m core.Message) string {
+	switch m.Kind {
+	case core.KindUser:
+		return "> " + m.Text
+	case core.KindTool:
+		return "⏺ " + m.Text
+	case core.KindResult:
+		return "⎿ " + m.Text
+	case core.KindThinking:
+		return "✻ " + m.Text
+	case core.KindTurn:
+		return "✓ " + m.Text
+	case core.KindDenied:
+		return "⛔ " + m.Text
+	case core.KindInfo:
+		return "● " + m.Text
+	}
+	return m.Text
+}
+
+func (a *Model) jumpTo(key string) {
+	for i, k := range core.MessageKeys(a.cur.Messages) {
+		if k == key {
 			a.focus = focusMessages
 			a.msgCursor = i
 			a.renderMessages()
 			return
 		}
 	}
-	a.status = "Stelle nicht im Verlauf gefunden"
+	a.status = "Stelle nicht im Verlauf gefunden (z. B. Abschlusszeile vor einem Neustart)"
 	a.focus = focusList
 }
 
@@ -821,10 +899,18 @@ func (a *Model) renderMessages() {
 	line := 0
 	prevTool := ""
 	msgs := a.cur.Messages
+	keys := core.MessageKeys(msgs)
 	for i, m := range msgs {
 		a.offsets = append(a.offsets, line)
 		selected := a.focus == focusMessages && i == a.msgCursor
 		block := a.renderMessage(m, prevTool, selected, a.expanded[i], width)
+		if a.cur.IsPinned(keys[i]) {
+			first, rest, hasRest := strings.Cut(block, "\n")
+			block = first + pinStyle.Render(" ★")
+			if hasRest {
+				block += "\n" + rest
+			}
+		}
 		if m.Kind == core.KindTool {
 			prevTool = m.Tool
 		}
@@ -856,7 +942,7 @@ func (a *Model) View() string {
 		return "Lade…"
 	}
 	rightW := a.w - leftW - 4
-	bodyH := a.h - 2 - 3 - 1
+	bodyH := a.bodyHeight()
 
 	box := func(focused bool) lipgloss.Style {
 		c := lipgloss.Color("8")
@@ -877,13 +963,26 @@ func (a *Model) View() string {
 	if a.focus == focusList || a.focus == focusMessages {
 		help = a.renderButtons()
 	} else {
-		help = dim.Render(ansi.Truncate(helpLine[a.focus], a.w, "…"))
+		// Keep the layout stable: the help text uses the bar's height.
+		help = dim.Render(ansi.Truncate(helpLine[a.focus], a.w, "…")) +
+			strings.Repeat("\n", a.barHeight()-1)
 	}
 	return lipgloss.JoinVertical(lipgloss.Left,
 		lipgloss.JoinHorizontal(lipgloss.Top, left, right), input, help)
 }
 
 func (a *Model) renderList(h int) string {
+	usage := usageLines(a.mgr.Limits(), time.Now(), leftW)
+	list := a.renderSessions(h - len(usage))
+	if len(usage) == 0 {
+		return list
+	}
+	// Pad the list so the usage block sits at the bottom of the panel.
+	pad := max(h-len(usage)-lipgloss.Height(list), 0)
+	return list + strings.Repeat("\n", pad+1) + strings.Join(usage, "\n")
+}
+
+func (a *Model) renderSessions(h int) string {
 	if len(a.sessions) == 0 {
 		return dim.Render("Keine Sessions.\n\nn oder [+ Neu] = neue Session")
 	}
@@ -913,6 +1012,7 @@ func (a *Model) renderList(h int) string {
 		}
 		lines = append(lines, title, sub)
 	}
+	a.listRows = len(lines)
 	return strings.Join(lines, "\n")
 }
 
@@ -929,6 +1029,8 @@ func (a *Model) renderRight(w int) string {
 		return bold.Render(a.overlayT) + "\n" + a.overlay.View()
 	case focusNotes:
 		return bold.Render("Notizen – "+s.Name) + dim.Render("  (esc speichert)") + "\n" + a.notes.View()
+	case focusPick:
+		return a.renderPick(w)
 	case focusPins:
 		var b strings.Builder
 		b.WriteString(bold.Render("Pins – "+s.Name) + dim.Render("  (enter springen, x entfernen)") + "\n")
@@ -942,24 +1044,35 @@ func (a *Model) renderRight(w int) string {
 		return b.String()
 	}
 
-	head := bold.Render(s.Name) + "  " + statusStyle(s.Status).Render(statusIcon(s.Status)+" "+s.Status.String())
-	if s.CostUSD > 0 {
-		head += dim.Render(fmt.Sprintf("  $%.2f", s.CostUSD))
+	// Line 1: name, status, model, effort, context.
+	head := bold.Render(s.Name) + "  " + statusStyle(s.Status).Render(statusIcon(s.Status)+" "+s.Status.String()) +
+		dim.Render("  · "+modelText(s))
+	if s.Effort != "" {
+		head += dim.Render(" · Effort " + s.Effort)
 	}
-	if len(s.Pins) > 0 {
-		head += pinStyle.Render(fmt.Sprintf("  ★%d", len(s.Pins)))
+	if c := contextText(s); c != "" {
+		head += dim.Render(" · ") + c
 	}
-	if s.Notes != "" {
-		head += dim.Render("  ✎")
-	}
+	// Line 2: git, cost, pins, notes, folder – or a status/activity message.
+	var info []string
 	if g := a.git[s.Dir]; g.IsRepo {
-		gs := "  ⎇ " + g.Branch
+		gs := "⎇ " + g.Branch
 		if g.Dirty > 0 {
 			gs += fmt.Sprintf(" ±%d", g.Dirty)
 		}
-		head += dim.Render(gs)
+		info = append(info, gs)
 	}
-	sub := dim.Render(ansi.Truncate(s.Dir, w, "…"))
+	if s.CostUSD > 0 {
+		info = append(info, fmt.Sprintf("$%.2f", s.CostUSD))
+	}
+	if len(s.Pins) > 0 {
+		info = append(info, pinStyle.Render(fmt.Sprintf("★%d", len(s.Pins))))
+	}
+	if s.Notes != "" {
+		info = append(info, "✎ Notizen")
+	}
+	info = append(info, s.Dir)
+	sub := dim.Render(ansi.Truncate(strings.Join(info, " · "), w, "…"))
 	switch {
 	case a.status != "":
 		sub = infoStyle.Render(ansi.Truncate(a.status, w, "…"))
@@ -981,7 +1094,7 @@ func expandHome(p string) string {
 
 var helpLine = map[focus]string{
 	focusList:     "↑↓ wählen · enter schreiben · tab Verlauf · n neu · x stop · p pin · P pins · o notizen · f diff · u pull · e explorer · c IDE · g github · ? hilfe · q beenden",
-	focusMessages: "↑↓ Eintrag wählen · p pin/unpin · c Datei in IDE · f Diff in IDE · pgup/pgdn scrollen · tab zurück zur Liste",
+	focusMessages: "↑↓ Eintrag wählen · enter ganz zeigen · p pin · v Details · c Datei in IDE · f Diff in IDE · tab zurück",
 	focusInput:    "enter senden · esc zurück",
 	focusNewDir:   "Ordner für die neue Session · enter weiter · esc abbrechen",
 	focusNewName:  "Name der Session · enter starten · esc abbrechen",
@@ -989,6 +1102,7 @@ var helpLine = map[focus]string{
 	focusPins:     "↑↓ wählen · enter zur Stelle springen · x entfernen · esc zurück",
 	focusOverlay:  "↑↓/pgup/pgdn scrollen · esc schließen",
 	focusConfirm:  "y bestätigen · andere Taste abbrechen",
+	focusPick:     "↑↓ wählen · enter übernehmen · esc abbrechen",
 	focusFiles:    "↑↓ wählen · enter/Klick öffnen · →← auf/zu · m nur Änderungen · f Diff in IDE · F Diff hier · c IDE · e explorer · esc zurück",
 }
 
@@ -1002,10 +1116,16 @@ const helpText = `Sessions
   t          Session in externem Terminal öffnen (claude --resume)
 
 Verlauf, Pins, Notizen
+  M          Modell der Session wählen (wartende Session startet neu, Verlauf bleibt)
+  E          Effort der Session wählen (low … max)
+
+Verlauf
   tab        zwischen Liste und Verlauf wechseln
-  ↑/↓        im Verlauf: Antwort oder Tool-Zeile wählen
-  c / f      auf ⚙-Zeile mit Datei: in der IDE öffnen / Diff in der IDE
-  p          Antwort pinnen / entpinnen (in der Liste: letzte Antwort)
+  ↑/↓        Eintrag wählen (Antwort, Nachricht, Tool, Ergebnis, …)
+  enter      Eintrag ganz anzeigen / wieder kürzen (auch 2. Klick)
+  v          Details an/aus (Tool-Eingaben, mehrere Ergebniszeilen)
+  c / f      auf ⏺-Zeile mit Datei: in der IDE öffnen / Diff in der IDE
+  p          gewählten Eintrag pinnen / entpinnen (in der Liste: letzte Antwort)
   P          Pins anzeigen, enter springt zur Stelle
   o          Notizen bearbeiten (esc speichert)
   pgup/pgdn  Verlauf scrollen

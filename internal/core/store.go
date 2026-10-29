@@ -19,6 +19,8 @@ type Config struct {
 type state struct {
 	Config   Config     `json:"config"`
 	Sessions []*Session `json:"sessions"`
+	// Limits is the last known account usage, shown until fresh data arrives.
+	Limits Limits `json:"limits"`
 }
 
 func defaultStatePath() (string, error) {
