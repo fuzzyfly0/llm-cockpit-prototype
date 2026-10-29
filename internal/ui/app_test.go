@@ -327,6 +327,60 @@ func TestHintLineAndHeight(t *testing.T) {
 	}
 }
 
+// Regression: the Dateien tab kept showing the old session's files after a
+// session switch by arrow keys, mouse wheel or the session search.
+func TestFilesFollowSessionSwitch(t *testing.T) {
+	mgr, _ := core.NewManagerAt("")
+	t.Cleanup(mgr.StopAll)
+	dirs := map[string]string{}
+	for name, files := range map[string][]string{"eins": {"a.txt"}, "zwei": {"b.txt", "c.txt"}} {
+		dir := t.TempDir()
+		for _, f := range files {
+			_ = os.WriteFile(filepath.Join(dir, f), nil, 0o644)
+		}
+		if _, err := mgr.Create(name, dir); err != nil {
+			t.Fatal(err)
+		}
+		dirs[name] = dir
+	}
+	mgr.StopAll()
+	a := New(mgr)
+	send(t, a, tea.WindowSizeMsg{Width: 140, Height: 30})
+	run(t, a, a.setTab(tabFiles))
+
+	check := func(how string) {
+		t.Helper()
+		want := map[string]int{"eins": 1, "zwei": 2}[a.cur.Name]
+		if a.files.dir != a.cur.Dir || a.files.total != want || a.tab != tabFiles {
+			t.Fatalf("%s: session %q, files of %q (%d files), tab %d", how, a.cur.Name, a.files.dir, a.files.total, a.tab)
+		}
+	}
+	check("start")
+
+	// Arrow keys in the session list.
+	a.focus = focusList
+	_, cmd := a.handlePanelKey(special(tea.KeyDown))
+	run(t, a, cmd)
+	check("list ↓")
+	if a.focus != focusList {
+		t.Fatalf("focus moved to %d", a.focus)
+	}
+	// Mouse wheel over the list.
+	a.View()
+	_, cmd = a.handleMouse(tea.MouseMsg{X: 5, Y: 3, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelUp})
+	run(t, a, cmd)
+	check("wheel")
+	// alt+↓ and the session search keep the tab.
+	_, cmd = a.Update(tea.KeyMsg{Type: tea.KeyDown, Alt: true})
+	run(t, a, cmd)
+	check("alt+↓")
+	send(t, a, tea.KeyMsg{Type: tea.KeyCtrlK})
+	typeText(t, a, "eins")
+	_, cmd = a.Update(special(tea.KeyEnter))
+	run(t, a, cmd)
+	check("ctrl+k")
+}
+
 func TestSessionLink(t *testing.T) {
 	a, _ := newWith(t, 120, 30, "PROJ-123")
 	a.runAction("link")

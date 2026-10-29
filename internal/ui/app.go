@@ -208,7 +208,7 @@ func (a *Model) onFilesChanged(dir string) tea.Cmd {
 		return tea.Batch(cmds...)
 	}
 	cmds = append(cmds, a.gitCmd())
-	if a.focus == focusFiles {
+	if a.tab == tabFiles {
 		cmds = append(cmds, filesCmd(a.files.dir))
 	}
 	if a.focus == focusOverlay && a.previewPath != "" {
@@ -306,7 +306,7 @@ func (a *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.onWorktreeAdded(msg)
 	case tickMsg:
 		cmds := []tea.Cmd{a.gitCmd(), tick()}
-		if a.focus == focusFiles {
+		if a.tab == tabFiles && a.files.dir != "" {
 			cmds = append(cmds, filesCmd(a.files.dir))
 		}
 		return a, tea.Batch(cmds...)
@@ -472,7 +472,7 @@ func (a *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			// Switch sessions; the focus stays where it is.
 			if a.moveSelection(sign(delta)) {
 				a.refresh()
-				return a, a.gitCmd()
+				return a, a.sessionChanged()
 			}
 		case a.focus == focusOverlay:
 			a.overlay.SetYOffset(a.overlay.YOffset + delta)
@@ -529,11 +529,7 @@ func (a *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if idx != a.sel {
 				a.sel = idx
 				a.refresh()
-				cmds = append(cmds, a.gitCmd())
-				if a.tab == tabFiles {
-					cmds = append(cmds, a.openFiles())
-					a.focus = focusInput
-				}
+				cmds = append(cmds, a.sessionChanged())
 			}
 			a.renderMessages()
 			return a, tea.Batch(cmds...)
@@ -706,14 +702,14 @@ func (a *Model) handleNav(key string) (tea.Model, tea.Cmd) {
 			a.moveCursor(-1)
 		} else if a.moveSelection(-1) {
 			a.refresh()
-			return a, a.gitCmd()
+			return a, a.sessionChanged()
 		}
 	case "down", "j":
 		if a.focus == focusMessages {
 			a.moveCursor(1)
 		} else if a.moveSelection(1) {
 			a.refresh()
-			return a, a.gitCmd()
+			return a, a.sessionChanged()
 		}
 	case "pgup":
 		a.vp.HalfPageUp()

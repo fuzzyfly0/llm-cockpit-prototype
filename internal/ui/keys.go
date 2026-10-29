@@ -172,9 +172,8 @@ func (a *Model) switchMatches() []int {
 func (a *Model) chooseSwitch(i int) tea.Cmd {
 	a.closeSwitcher()
 	a.sel = i
-	a.tab = tabHistory
 	a.refresh()
-	return a.gitCmd()
+	return a.sessionChanged()
 }
 
 func (a *Model) handleSwitcherKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -345,10 +344,7 @@ func (a *Model) handleGlobalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		}
 		if a.moveSelection(d) {
 			a.refresh()
-			if a.tab == tabFiles {
-				return a, tea.Batch(a.gitCmd(), a.openFiles()), true
-			}
-			return a, a.gitCmd(), true
+			return a, a.sessionChanged(), true
 		}
 		return a, nil, true
 	case "alt+1", "alt+2", "alt+3", "alt+4":
