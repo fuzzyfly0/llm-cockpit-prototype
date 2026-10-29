@@ -32,6 +32,7 @@ const (
 	KindUser Kind = iota
 	KindAssistant
 	KindTool
+	KindResult
 	KindInfo
 )
 
@@ -39,6 +40,8 @@ type Message struct {
 	UUID string
 	Kind Kind
 	Text string
+	// Partial marks an assistant text that is still being streamed.
+	Partial bool
 }
 
 type Pin struct {
@@ -64,6 +67,7 @@ type Session struct {
 	historyLoaded bool
 	costBase      float64
 	proc          *process
+	partial       int // index of the streaming message in Messages, -1 if none
 }
 
 func (s *Session) IsPinned(uuid string) bool {

@@ -31,6 +31,11 @@ func TestLiveSession(t *testing.T) {
 			if s.ClaudeID == "" {
 				t.Error("no claude session id captured")
 			}
+			for _, msg := range s.Messages {
+				if msg.Partial || (msg.Kind == KindAssistant && msg.UUID == "") {
+					t.Errorf("unfinished streamed message left: %+v", msg)
+				}
+			}
 			return
 		}
 		if s.Status == StatusError {

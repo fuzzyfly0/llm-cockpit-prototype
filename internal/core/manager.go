@@ -159,7 +159,7 @@ func (m *Manager) start(s *Session) error {
 	m.ensureHistory(s)
 	cfg := m.st.Config
 	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json",
-		"--verbose", "--permission-mode", cfg.PermissionMode}
+		"--verbose", "--include-partial-messages", "--permission-mode", cfg.PermissionMode}
 	if s.ClaudeID != "" {
 		args = append(args, "--resume", s.ClaudeID)
 	}
@@ -182,6 +182,7 @@ func (m *Manager) start(s *Session) error {
 		return err
 	}
 	s.proc = p
+	s.partial = -1
 	s.costBase = s.CostUSD
 	s.Status = StatusIdle
 	s.Activity = ""
@@ -234,17 +235,37 @@ func (m *Manager) handle(s *Session, ev streamEvent) {
 			s.ClaudeID = ev.SessionID
 			m.save()
 		}
+		if ev.Subtype == "thinking_tokens" {
+			s.Activity = fmt.Sprintf("💭 denkt… (~%d Tokens)", ev.EstimatedTokens)
+		}
+	case "stream_event":
+		m.handleStream(s, ev.Event)
 	case "assistant":
 		for _, msg := range messagesFrom(ev) {
-			s.Messages = append(s.Messages, msg)
+			if msg.Kind == KindAssistant && s.partial >= 0 && s.partial < len(s.Messages) {
+				// The complete block replaces its streamed preview.
+				s.Messages[s.partial] = msg
+				s.partial = -1
+			} else {
+				s.Messages = append(s.Messages, msg)
+			}
 			if msg.Kind == KindTool {
 				s.Activity = "⚙ " + msg.Text
-			} else {
-				s.Activity = "schreibt…"
 			}
 		}
 		s.Status = StatusWorking
+	case "user":
+		// Prompts are recorded by Send; only tool results come from the stream.
+		for _, msg := range messagesFrom(ev) {
+			if msg.Kind == KindResult {
+				s.Messages = append(s.Messages, msg)
+			}
+		}
 	case "result":
+		if s.partial >= 0 && s.partial < len(s.Messages) {
+			s.Messages[s.partial].Partial = false
+		}
+		s.partial = -1
 		s.Status = StatusIdle
 		s.Activity = ""
 		s.Unread = true
@@ -255,6 +276,30 @@ func (m *Manager) handle(s *Session, ev streamEvent) {
 			s.Messages = append(s.Messages, Message{Kind: KindInfo, Text: "Fehler: " + ev.Result})
 		}
 		m.save()
+	}
+}
+
+func (m *Manager) handleStream(s *Session, e *apiEvent) {
+	if e == nil {
+		return
+	}
+	s.Status = StatusWorking
+	switch e.Type {
+	case "content_block_start":
+		switch e.ContentBlock.Type {
+		case "text":
+			s.Messages = append(s.Messages, Message{Kind: KindAssistant, Partial: true})
+			s.partial = len(s.Messages) - 1
+			s.Activity = "schreibt…"
+		case "thinking":
+			s.Activity = "💭 denkt…"
+		case "tool_use":
+			s.Activity = "⚙ " + e.ContentBlock.Name + "…"
+		}
+	case "content_block_delta":
+		if e.Delta.Type == "text_delta" && s.partial >= 0 && s.partial < len(s.Messages) {
+			s.Messages[s.partial].Text += e.Delta.Text
+		}
 	}
 }
 

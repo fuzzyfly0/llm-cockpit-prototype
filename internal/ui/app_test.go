@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/stefa/llm-cockpit/internal/core"
 )
@@ -60,6 +61,75 @@ func TestRestartWithSavedSession(t *testing.T) {
 		t.Fatal("saved session not shown")
 	}
 }
+
+func click(x, y int) tea.MouseMsg {
+	return tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
+}
+
+func TestMouse(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	setup, _ := core.NewManagerAt(path)
+	for _, name := range []string{"eins", "zwei"} {
+		if _, err := setup.Create(name, t.TempDir()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setup.StopAll()
+
+	mgr, _ := core.NewManagerAt(path)
+	defer mgr.StopAll()
+	a := New(mgr)
+	send(t, a, tea.WindowSizeMsg{Width: 140, Height: 30})
+	a.View()
+
+	// Second session occupies content rows 2-3, i.e. screen rows 3-4.
+	send(t, a, click(5, 3))
+	if a.sel != 1 || a.cur.Name != "zwei" {
+		t.Fatalf("click on session: sel=%d cur=%q", a.sel, a.cur.Name)
+	}
+	send(t, a, tea.MouseMsg{X: 5, Y: 3, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelUp})
+	if a.sel != 0 {
+		t.Fatalf("wheel up over list: sel=%d", a.sel)
+	}
+	// Click into the input box.
+	send(t, a, click(10, 30-3))
+	if a.focus != focusInput {
+		t.Fatalf("click on input: focus=%d", a.focus)
+	}
+	send(t, a, special(tea.KeyEsc))
+	// "[+ Neu]" is the first button in the bottom row.
+	send(t, a, click(2, 29))
+	if a.focus != focusNewDir {
+		t.Fatalf("click on [+ Neu]: focus=%d", a.focus)
+	}
+	send(t, a, special(tea.KeyEsc))
+	// "[?]" opens the help.
+	x := strings.Index(ansiStrip(a.renderButtons()), "[?]")
+	send(t, a, click(x+1, 29))
+	if a.focus != focusOverlay {
+		t.Fatalf("click on [?] at x=%d: focus=%d", x, a.focus)
+	}
+}
+
+func TestStreamingRender(t *testing.T) {
+	mgr, _ := core.NewManagerAt("")
+	a := New(mgr)
+	send(t, a, tea.WindowSizeMsg{Width: 100, Height: 20})
+	a.cur = core.Session{Messages: []core.Message{
+		{Kind: core.KindTool, Text: "Glob *"},
+		{Kind: core.KindResult, Text: "a.go (+2 Zeilen)"},
+		{Kind: core.KindAssistant, Text: "Im Ordner", Partial: true},
+	}}
+	a.renderMessages()
+	out := a.vp.View()
+	for _, want := range []string{"⚙ Glob *", "↳ a.go (+2 Zeilen)", "Im Ordner▌"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func ansiStrip(s string) string { return ansi.Strip(s) }
 
 func TestCreateSessionFlow(t *testing.T) {
 	mgr, _ := core.NewManagerAt("")

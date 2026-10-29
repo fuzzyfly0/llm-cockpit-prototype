@@ -36,9 +36,9 @@ func TestMessagesFrom(t *testing.T) {
 		{"user string",
 			`{"type":"user","uuid":"u4","message":{"role":"user","content":"Hallo"}}`,
 			[]Message{{UUID: "u4", Kind: KindUser, Text: "Hallo"}}},
-		{"user tool result is skipped",
-			`{"type":"user","uuid":"u5","message":{"content":[{"type":"tool_result","content":"x"}]}}`,
-			nil},
+		{"tool result is summarized",
+			`{"type":"user","uuid":"u5","message":{"content":[{"type":"tool_result","content":"a.go\nb.go\nc.go"}]}}`,
+			[]Message{{UUID: "u5", Kind: KindResult, Text: "a.go (+2 Zeilen)"}}},
 		{"system reminder is skipped",
 			`{"type":"user","uuid":"u6","message":{"content":"<system-reminder>x</system-reminder>"}}`,
 			nil},
@@ -95,6 +95,31 @@ func TestChangedDoesNotBlockWithoutReader(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("changed() blocked")
+	}
+}
+
+// Replays the real event sequence recorded with --include-partial-messages.
+func TestStreamingReplacesPartialText(t *testing.T) {
+	m := &Manager{st: &state{}}
+	s := &Session{partial: -1}
+	for _, line := range []string{
+		`{"type":"system","subtype":"thinking_tokens","estimated_tokens":50}`,
+		`{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"text","text":""}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Im "}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Ordner"}}}`,
+	} {
+		m.handle(s, parse(t, line))
+	}
+	if len(s.Messages) != 1 || s.Messages[0].Text != "Im Ordner" || !s.Messages[0].Partial {
+		t.Fatalf("while streaming: %+v", s.Messages)
+	}
+	m.handle(s, parse(t, `{"type":"assistant","uuid":"u9","message":{"content":[{"type":"text","text":"Im Ordner liegen 12 Dateien."}]}}`))
+	want := Message{UUID: "u9", Kind: KindAssistant, Text: "Im Ordner liegen 12 Dateien."}
+	if len(s.Messages) != 1 || s.Messages[0] != want {
+		t.Fatalf("after final block: %+v", s.Messages)
+	}
+	if s.Status != StatusWorking {
+		t.Fatalf("status %v", s.Status)
 	}
 }
 

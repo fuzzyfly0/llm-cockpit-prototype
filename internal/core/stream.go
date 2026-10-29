@@ -17,13 +17,28 @@ type streamEvent struct {
 	TotalCost float64         `json:"total_cost_usd"`
 	IsError   bool            `json:"is_error"`
 	Result    string          `json:"result"`
+	// Live streaming (--include-partial-messages).
+	Event           *apiEvent `json:"event"`
+	EstimatedTokens int       `json:"estimated_tokens"`
+}
+
+// apiEvent is the raw Messages API stream event inside a "stream_event".
+type apiEvent struct {
+	Type         string       `json:"type"`
+	ContentBlock contentBlock `json:"content_block"`
+	Delta        struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"delta"`
 }
 
 type contentBlock struct {
-	Type  string          `json:"type"`
-	Text  string          `json:"text"`
-	Name  string          `json:"name"`
-	Input json.RawMessage `json:"input"`
+	Type    string          `json:"type"`
+	Text    string          `json:"text"`
+	Name    string          `json:"name"`
+	Input   json.RawMessage `json:"input"`
+	Content json.RawMessage `json:"content"`
+	IsError bool            `json:"is_error"`
 }
 
 // messagesFrom converts a user/assistant event into displayable messages.
@@ -58,9 +73,35 @@ func messagesFrom(ev streamEvent) []Message {
 			}
 		case b.Type == "tool_use":
 			out = append(out, Message{UUID: ev.UUID, Kind: KindTool, Text: toolSummary(b)})
+		case b.Type == "tool_result":
+			out = append(out, Message{UUID: ev.UUID, Kind: KindResult, Text: resultSummary(b)})
 		}
 	}
 	return out
+}
+
+// resultSummary condenses a tool result to its first line plus a line count.
+func resultSummary(b contentBlock) string {
+	var text string
+	if json.Unmarshal(b.Content, &text) != nil {
+		var parts []contentBlock
+		_ = json.Unmarshal(b.Content, &parts)
+		for _, p := range parts {
+			text += p.Text
+		}
+	}
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	s := excerpt(lines[0], 100)
+	if len(lines) > 1 {
+		s += fmt.Sprintf(" (+%d Zeilen)", len(lines)-1)
+	}
+	if b.IsError {
+		s = "Fehler: " + s
+	}
+	if s == "" {
+		s = "(leer)"
+	}
+	return s
 }
 
 func toolSummary(b contentBlock) string {

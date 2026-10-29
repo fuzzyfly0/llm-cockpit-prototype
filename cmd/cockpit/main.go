@@ -21,7 +21,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	p := tea.NewProgram(ui.New(mgr), tea.WithAltScreen())
+	p := tea.NewProgram(ui.New(mgr), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	mgr.Subscribe(func() { p.Send(ui.ChangedMsg{}) })
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

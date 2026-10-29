@@ -80,6 +80,10 @@ type Model struct {
 	sel      int
 	cur      core.Session
 	offsets  []int
+	// listStart is the first session shown in the list (for mouse hits).
+	listStart int
+	// stickBottom forces the next render to scroll to the newest message.
+	stickBottom bool
 
 	focus     focus
 	msgCursor int
@@ -140,9 +144,13 @@ func (a *Model) refresh() {
 	if a.sel < 0 && len(a.sessions) > 0 {
 		a.sel = 0
 	}
+	prevID := a.cur.ID
 	a.cur = core.Session{}
 	if a.sel >= 0 {
 		id := a.sessions[a.sel].ID
+		if id != prevID {
+			a.stickBottom = true
+		}
 		a.mgr.MarkRead(id)
 		a.sessions[a.sel].Unread = false
 		a.cur, _ = a.mgr.Get(id)
@@ -202,6 +210,124 @@ func (a *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tea.Quit
 		}
 		return a.handleKey(msg)
+	case tea.MouseMsg:
+		return a.handleMouse(msg)
+	}
+	return a, nil
+}
+
+type button struct{ label, key string }
+
+var buttons = []button{
+	{"+ Neu", "n"}, {"Schreiben", "enter"}, {"Start", "r"}, {"Stop", "x"},
+	{"Pin", "p"}, {"Pins", "P"}, {"Notizen", "o"}, {"Diff", "f"}, {"Pull", "u"},
+	{"Explorer", "e"}, {"IDE", "c"}, {"GitHub", "g"}, {"Terminal", "t"},
+	{"Entfernen", "ctrl+d"}, {"?", "?"}, {"Beenden", "q"},
+}
+
+func (a *Model) renderButtons() string {
+	var parts []string
+	for _, b := range buttons {
+		parts = append(parts, lipgloss.NewStyle().Foreground(accent).Render("["+b.label+"]"))
+	}
+	return ansi.Truncate(strings.Join(parts, " "), a.w, "")
+}
+
+// buttonAt returns the key of the button at column x of the button bar.
+func buttonAt(x int) (string, bool) {
+	pos := 0
+	for _, b := range buttons {
+		w := lipgloss.Width("[" + b.label + "]")
+		if x >= pos && x < pos+w {
+			return b.key, true
+		}
+		pos += w + 1
+	}
+	return "", false
+}
+
+func (a *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if a.w == 0 {
+		return a, nil
+	}
+	bodyH := a.h - 2 - 3 - 1
+	inLeft := msg.X <= leftW+1 && msg.Y <= bodyH+1
+	inRight := msg.X > leftW+1 && msg.Y <= bodyH+1
+	row := msg.Y - 1 // content row inside the panel borders
+
+	if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
+		delta := 3
+		if msg.Button == tea.MouseButtonWheelUp {
+			delta = -3
+		}
+		switch {
+		case inLeft && (a.focus == focusList || a.focus == focusMessages):
+			a.focus = focusList
+			if delta < 0 {
+				return a.handleNav("up")
+			}
+			return a.handleNav("down")
+		case a.focus == focusOverlay:
+			a.overlay.SetYOffset(a.overlay.YOffset + delta)
+		default:
+			a.vp.SetYOffset(a.vp.YOffset + delta)
+		}
+		return a, nil
+	}
+	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
+		return a, nil
+	}
+
+	// Modal views: only their own area reacts to clicks.
+	switch a.focus {
+	case focusConfirm, focusNewDir, focusNewName:
+		return a, nil
+	case focusPins:
+		if inRight && row >= 1 && row-1 < len(a.cur.Pins) {
+			a.pinSel = row - 1
+			a.jumpTo(a.cur.Pins[a.pinSel].UUID)
+		}
+		return a, nil
+	case focusNotes, focusOverlay:
+		if !inRight {
+			return a.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+		}
+		return a, nil
+	case focusInput:
+		if msg.Y <= bodyH+1 {
+			a.input.Blur()
+			a.focus = focusList
+		}
+	}
+
+	switch {
+	case inLeft && row >= 0:
+		idx := a.listStart + row/2
+		if idx < len(a.sessions) {
+			a.focus = focusList
+			if idx != a.sel {
+				a.sel = idx
+				a.refresh()
+				return a, a.gitCmd()
+			}
+			a.renderMessages()
+		}
+	case inRight && row >= 2:
+		line := a.vp.YOffset + row - 2
+		for i := len(a.offsets) - 1; i >= 0; i-- {
+			if a.offsets[i] <= line {
+				a.focus = focusMessages
+				a.msgCursor = i
+				a.renderMessages()
+				break
+			}
+		}
+	case msg.Y >= bodyH+2 && msg.Y <= bodyH+4:
+		return a.handleNav("i")
+	case msg.Y == a.h-1:
+		if key, ok := buttonAt(msg.X); ok {
+			return a.handleNav(key)
+		}
 	}
 	return a, nil
 }
@@ -513,6 +639,9 @@ func (a *Model) renderMessages() {
 		return
 	}
 	body := lipgloss.NewStyle().Width(width - 2).PaddingLeft(2)
+	// Follow new output only if the user has not scrolled up.
+	follow := a.stickBottom || a.vp.AtBottom() || a.vp.TotalLineCount() <= a.vp.Height
+	a.stickBottom = false
 	var b strings.Builder
 	a.offsets = a.offsets[:0]
 	line := 0
@@ -531,9 +660,15 @@ func (a *Model) renderMessages() {
 		case core.KindUser:
 			block = marker + userStyle.Render("Du") + "\n" + body.Render(m.Text)
 		case core.KindAssistant:
-			block = marker + llmStyle.Render("Claude") + pin + "\n" + body.Render(m.Text)
+			text := m.Text
+			if m.Partial {
+				text += "▌"
+			}
+			block = marker + llmStyle.Render("Claude") + pin + "\n" + body.Render(text)
 		case core.KindTool:
 			block = marker + dim.Render(ansi.Truncate("⚙ "+m.Text, width-2, "…"))
+		case core.KindResult:
+			block = marker + dim.Render(ansi.Truncate("  ↳ "+m.Text, width-2, "…"))
 		default:
 			block = marker + infoStyle.Render(ansi.Truncate(m.Text, width-2, "…"))
 		}
@@ -550,7 +685,7 @@ func (a *Model) renderMessages() {
 		if off < a.vp.YOffset || off >= a.vp.YOffset+a.vp.Height {
 			a.vp.SetYOffset(off)
 		}
-	} else {
+	} else if follow {
 		a.vp.GotoBottom()
 	}
 }
@@ -577,18 +712,19 @@ func (a *Model) View() string {
 	inputFocused := a.focus == focusInput || a.focus == focusNewDir || a.focus == focusNewName
 	input := box(inputFocused).Width(a.w - 2).Render(a.input.View())
 
-	help := a.status
-	if help == "" {
-		help = helpLine[a.focus]
+	var help string
+	if a.focus == focusList || a.focus == focusMessages {
+		help = a.renderButtons()
+	} else {
+		help = dim.Render(ansi.Truncate(helpLine[a.focus], a.w, "…"))
 	}
-	help = dim.Render(ansi.Truncate(help, a.w, "…"))
 	return lipgloss.JoinVertical(lipgloss.Left,
 		lipgloss.JoinHorizontal(lipgloss.Top, left, right), input, help)
 }
 
 func (a *Model) renderList(h int) string {
 	if len(a.sessions) == 0 {
-		return dim.Render("Keine Sessions.\n\nn = neue Session")
+		return dim.Render("Keine Sessions.\n\nn oder [+ Neu] = neue Session")
 	}
 	perItem := 2
 	visible := max(h/perItem, 1)
@@ -596,6 +732,7 @@ func (a *Model) renderList(h int) string {
 	if a.sel >= visible {
 		start = a.sel - visible + 1
 	}
+	a.listStart = start
 	var lines []string
 	for i := start; i < len(a.sessions) && i < start+visible; i++ {
 		s := a.sessions[i]
@@ -621,7 +758,8 @@ func (a *Model) renderList(h int) string {
 func (a *Model) renderRight(w int) string {
 	s, ok := a.selected()
 	if !ok {
-		return dim.Render("n drücken, um eine Session in einem Ordner zu starten.\n? zeigt alle Tastenkürzel.")
+		return infoStyle.Render(a.status) + "\n" +
+			dim.Render("n oder [+ Neu] startet eine Session in einem Ordner.\n? zeigt alle Tastenkürzel.")
 	}
 	switch a.focus {
 	case focusOverlay:
@@ -658,11 +796,14 @@ func (a *Model) renderRight(w int) string {
 		}
 		head += dim.Render(gs)
 	}
-	sub := s.Dir
-	if s.Status == core.StatusWorking && s.Activity != "" {
-		sub = s.Activity + "  ·  " + sub
+	sub := dim.Render(ansi.Truncate(s.Dir, w, "…"))
+	switch {
+	case a.status != "":
+		sub = infoStyle.Render(ansi.Truncate(a.status, w, "…"))
+	case s.Status == core.StatusWorking && s.Activity != "":
+		sub = dim.Render(ansi.Truncate(s.Activity+"  ·  "+s.Dir, w, "…"))
 	}
-	head = ansi.Truncate(head, w, "…") + "\n" + dim.Render(ansi.Truncate(sub, w, "…"))
+	head = ansi.Truncate(head, w, "…") + "\n" + sub
 	return head + "\n" + a.vp.View()
 }
 
@@ -711,4 +852,12 @@ Git & System
   e          Ordner im Explorer öffnen
   c          Ordner in der IDE öffnen (config.ide, Standard: idea)
 
-  q / ctrl+c beenden (laufende Sessions werden gestoppt)`
+  q / ctrl+c beenden (laufende Sessions werden gestoppt)
+
+Maus
+  Klick auf Session      auswählen
+  Klick auf Antwort      Antwort wählen (dann [Pin])
+  Klick auf Eingabe      Nachricht schreiben
+  Mausrad                Verlauf / Liste scrollen
+  Buttons unten          wie die Tasten oben
+  Shift + Ziehen         Text markieren und kopieren`
