@@ -34,6 +34,9 @@ const (
 	KindTool
 	KindResult
 	KindInfo
+	KindThinking
+	KindTurn   // summary of a finished turn
+	KindDenied // tool call blocked by the permission mode
 )
 
 type Message struct {
@@ -46,6 +49,10 @@ type Message struct {
 	// tools that read or modify a file.
 	Tool string
 	File string
+	// Detail is the full tool input (KindTool) or tool output (KindResult).
+	Detail string
+	// Sub marks output of a subagent.
+	Sub bool
 }
 
 // Modifies reports whether the tool call changed File.

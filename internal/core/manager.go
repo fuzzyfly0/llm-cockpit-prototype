@@ -17,6 +17,9 @@ type process struct {
 	stdin    io.WriteCloser
 	stderr   *tailBuffer
 	stopping bool
+	// initShown is set once the start line of this process was added
+	// (Claude repeats system/init for every turn).
+	initShown bool
 }
 
 // Manager owns all sessions and their Claude processes. All methods are safe
@@ -159,7 +162,8 @@ func (m *Manager) start(s *Session) error {
 	m.ensureHistory(s)
 	cfg := m.st.Config
 	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json",
-		"--verbose", "--include-partial-messages", "--permission-mode", cfg.PermissionMode}
+		"--verbose", "--include-partial-messages", "--forward-subagent-text",
+		"--permission-mode", cfg.PermissionMode}
 	if s.ClaudeID != "" {
 		args = append(args, "--resume", s.ClaudeID)
 	}
@@ -231,18 +235,32 @@ func (m *Manager) readLoop(s *Session, p *process, stdout io.Reader) {
 func (m *Manager) handle(s *Session, ev streamEvent) {
 	switch ev.Type {
 	case "system":
-		if ev.Subtype == "init" && ev.SessionID != "" && ev.SessionID != s.ClaudeID {
-			s.ClaudeID = ev.SessionID
-			m.save()
-		}
-		if ev.Subtype == "thinking_tokens" {
+		switch ev.Subtype {
+		case "init":
+			if ev.SessionID != "" && ev.SessionID != s.ClaudeID {
+				s.ClaudeID = ev.SessionID
+				m.save()
+			}
+			if s.proc != nil && !s.proc.initShown {
+				s.proc.initShown = true
+				s.Messages = append(s.Messages, Message{Kind: KindInfo, Text: initSummary(ev)})
+			}
+		case "thinking_tokens":
 			s.Activity = fmt.Sprintf("💭 denkt… (~%d Tokens)", ev.EstimatedTokens)
+		case "status":
+			if ev.Status != nil && *ev.Status != "" {
+				s.Activity = "⏳ " + *ev.Status
+			}
+		default:
+			s.Messages = append(s.Messages, Message{Kind: KindInfo, Text: "System: " + ev.Subtype})
 		}
 	case "stream_event":
-		m.handleStream(s, ev.Event)
+		if !ev.isSubagent() {
+			m.handleStream(s, ev.Event)
+		}
 	case "assistant":
 		for _, msg := range messagesFrom(ev) {
-			if msg.Kind == KindAssistant && s.partial >= 0 && s.partial < len(s.Messages) {
+			if msg.Kind == KindAssistant && !msg.Sub && s.partial >= 0 && s.partial < len(s.Messages) {
 				// The complete block replaces its streamed preview.
 				s.Messages[s.partial] = msg
 				s.partial = -1
@@ -272,9 +290,13 @@ func (m *Manager) handle(s *Session, ev streamEvent) {
 		// total_cost_usd is reported per process, so add it to the cost
 		// accumulated before this process was started.
 		s.CostUSD = s.costBase + ev.TotalCost
-		if ev.IsError {
+		for _, d := range ev.PermissionDenials {
+			s.Messages = append(s.Messages, Message{Kind: KindDenied, Text: denialText(d)})
+		}
+		if ev.IsError && ev.Result != "" {
 			s.Messages = append(s.Messages, Message{Kind: KindInfo, Text: "Fehler: " + ev.Result})
 		}
+		s.Messages = append(s.Messages, Message{Kind: KindTurn, Text: turnSummary(ev)})
 		m.save()
 	}
 }

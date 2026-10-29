@@ -130,7 +130,7 @@ func TestCursorFile(t *testing.T) {
 		t.Fatalf("got %q %v, want %q", f, ok, want)
 	}
 	a.renderMessages()
-	if !strings.Contains(a.vp.View(), "[c] in IDE öffnen") {
+	if !strings.Contains(a.vp.View(), "[c] IDE · [f] Diff") {
 		t.Errorf("hint missing:\n%s", a.vp.View())
 	}
 	a.msgCursor = 1
@@ -142,18 +142,48 @@ func TestCursorFile(t *testing.T) {
 func TestStreamingRender(t *testing.T) {
 	mgr, _ := core.NewManagerAt("")
 	a := New(mgr)
-	send(t, a, tea.WindowSizeMsg{Width: 100, Height: 20})
+	send(t, a, tea.WindowSizeMsg{Width: 100, Height: 60})
 	a.cur = core.Session{Messages: []core.Message{
-		{Kind: core.KindTool, Text: "Glob *"},
-		{Kind: core.KindResult, Text: "a.go (+2 Zeilen)"},
+		{Kind: core.KindUser, Text: "Wie viele Dateien?"},
+		{Kind: core.KindThinking, Text: "nachgedacht (1.5 s)"},
+		{Kind: core.KindTool, Tool: "Glob", Text: "Glob *", Detail: "pattern: *"},
+		{Kind: core.KindResult, Text: "a.go (+2 Zeilen)", Detail: "a.go\nb.go\nc.go"},
+		{Kind: core.KindTool, Tool: "Edit", Text: "Edit x.go", File: "x.go", Detail: "- alt\n+ neu"},
+		{Kind: core.KindDenied, Text: "PowerShell go test  – vom Rechte-Modus nicht erlaubt"},
+		{Kind: core.KindTurn, Text: "fertig · 1.0 s · 2 Schritte"},
 		{Kind: core.KindAssistant, Text: "Im Ordner", Partial: true},
 	}}
 	a.renderMessages()
-	out := a.vp.View()
-	for _, want := range []string{"⚙ Glob *", "↳ a.go (+2 Zeilen)", "Im Ordner▌"} {
+	out := ansi.Strip(a.vp.View())
+	for _, want := range []string{
+		"> Wie viele Dateien?", "✻ nachgedacht (1.5 s)", "⏺ Glob(*)", "pattern: *",
+		"⎿  a.go", "c.go", "⏺ Update(x.go)", "- alt", "+ neu",
+		"⛔ verweigert: PowerShell go test", "✓ fertig", "⏺ Im Ordner▌",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
+	}
+}
+
+func TestLongResultIsClippedAndExpands(t *testing.T) {
+	mgr, _ := core.NewManagerAt("")
+	a := New(mgr)
+	send(t, a, tea.WindowSizeMsg{Width: 100, Height: 40})
+	long := strings.Repeat("zeile\n", 30) + "ende"
+	a.cur = core.Session{Messages: []core.Message{
+		{Kind: core.KindTool, Tool: "Bash", Text: "Bash ls", Detail: "$ ls"},
+		{Kind: core.KindResult, Text: "zeile (+30 Zeilen)", Detail: long},
+	}}
+	a.renderMessages()
+	if out := ansi.Strip(a.vp.View()); strings.Contains(out, "ende") || !strings.Contains(out, "… +27 Zeilen") {
+		t.Fatalf("not clipped:\n%s", out)
+	}
+	a.focus, a.msgCursor = focusMessages, 1
+	a.toggleExpanded()
+	a.vp.GotoBottom()
+	if out := ansi.Strip(a.vp.View()); !strings.Contains(out, "ende") {
+		t.Fatalf("not expanded:\n%s", out)
 	}
 }
 

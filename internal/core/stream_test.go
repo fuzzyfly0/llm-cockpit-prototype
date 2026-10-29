@@ -27,24 +27,30 @@ func TestMessagesFrom(t *testing.T) {
 		{"assistant text",
 			`{"type":"assistant","uuid":"u1","message":{"content":[{"type":"text","text":"Eins"}]}}`,
 			[]Message{{UUID: "u1", Kind: KindAssistant, Text: "Eins"}}},
-		{"thinking only is skipped",
-			`{"type":"assistant","uuid":"u2","message":{"content":[{"type":"thinking","thinking":""}]}}`,
-			nil},
+		{"thinking shows its duration",
+			`{"type":"assistant","uuid":"u2","thinking_duration_ms":3200,"message":{"content":[{"type":"thinking","thinking":""}]}}`,
+			[]Message{{UUID: "u2", Kind: KindThinking, Text: "nachgedacht (3.2 s)"}}},
 		{"tool use",
 			`{"type":"assistant","uuid":"u3","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"main.go"}}]}}`,
-			[]Message{{UUID: "u3", Kind: KindTool, Text: "Read main.go", Tool: "Read", File: "main.go"}}},
-		{"edit records the file",
-			`{"type":"assistant","uuid":"u7","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"C:/p/main.go"}}]}}`,
-			[]Message{{UUID: "u7", Kind: KindTool, Text: "Edit C:/p/main.go", Tool: "Edit", File: "C:/p/main.go"}}},
-		{"bash has no file",
-			`{"type":"assistant","uuid":"u8","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}`,
-			[]Message{{UUID: "u8", Kind: KindTool, Text: "Bash ls", Tool: "Bash"}}},
+			[]Message{{UUID: "u3", Kind: KindTool, Text: "Read main.go", Tool: "Read", File: "main.go", Detail: "file_path: main.go"}}},
+		{"edit becomes a diff",
+			`{"type":"assistant","uuid":"u7","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"C:/p/main.go","old_string":"a\nb","new_string":"c"}}]}}`,
+			[]Message{{UUID: "u7", Kind: KindTool, Text: "Edit C:/p/main.go", Tool: "Edit", File: "C:/p/main.go", Detail: "- a\n- b\n+ c"}}},
+		{"bash shows the command",
+			`{"type":"assistant","uuid":"u8","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls","description":"Liste"}}]}}`,
+			[]Message{{UUID: "u8", Kind: KindTool, Text: "Bash ls", Tool: "Bash", Detail: "# Liste\n$ ls"}}},
+		{"todo list",
+			`{"type":"assistant","uuid":"u9","message":{"content":[{"type":"tool_use","name":"TodoWrite","input":{"todos":[{"content":"A","status":"completed"},{"content":"B","status":"in_progress"},{"content":"C","status":"pending"}]}}]}}`,
+			[]Message{{UUID: "u9", Kind: KindTool, Text: "TodoWrite", Tool: "TodoWrite", Detail: "[x] A\n[~] B\n[ ] C"}}},
+		{"subagent output is marked",
+			`{"type":"assistant","uuid":"u10","parent_tool_use_id":"toolu_1","message":{"content":[{"type":"text","text":"sub"}]}}`,
+			[]Message{{UUID: "u10", Kind: KindAssistant, Text: "sub", Sub: true}}},
 		{"user string",
 			`{"type":"user","uuid":"u4","message":{"role":"user","content":"Hallo"}}`,
 			[]Message{{UUID: "u4", Kind: KindUser, Text: "Hallo"}}},
-		{"tool result is summarized",
+		{"tool result keeps the full output",
 			`{"type":"user","uuid":"u5","message":{"content":[{"type":"tool_result","content":"a.go\nb.go\nc.go"}]}}`,
-			[]Message{{UUID: "u5", Kind: KindResult, Text: "a.go (+2 Zeilen)"}}},
+			[]Message{{UUID: "u5", Kind: KindResult, Text: "a.go (+2 Zeilen)", Detail: "a.go\nb.go\nc.go"}}},
 		{"system reminder is skipped",
 			`{"type":"user","uuid":"u6","message":{"content":"<system-reminder>x</system-reminder>"}}`,
 			nil},
@@ -61,6 +67,40 @@ func TestMessagesFrom(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The result event of a turn adds denials and a summary line.
+func TestResultAddsSummaryAndDenials(t *testing.T) {
+	m := &Manager{st: &state{}}
+	s := &Session{partial: -1}
+	m.handle(s, parse(t, `{"type":"result","duration_ms":12300,"num_turns":3,"total_cost_usd":0.01,
+		"usage":{"input_tokens":4,"cache_creation_input_tokens":11438,"cache_read_input_tokens":37817,"output_tokens":923,"output_tokens_details":{"thinking_tokens":751}},
+		"permission_denials":[{"tool_name":"PowerShell","tool_input":{"command":"go test ./..."}}]}`))
+	if len(s.Messages) != 2 {
+		t.Fatalf("messages: %+v", s.Messages)
+	}
+	if d := s.Messages[0]; d.Kind != KindDenied || d.Text != "PowerShell go test ./...  – vom Rechte-Modus nicht erlaubt" {
+		t.Errorf("denial: %+v", d)
+	}
+	want := "fertig · 12.3 s · 3 Schritte · 49k Tokens rein · 923 raus (davon 751 Denken)"
+	if sum := s.Messages[1]; sum.Kind != KindTurn || sum.Text != want {
+		t.Errorf("summary: %q, want %q", sum.Text, want)
+	}
+}
+
+func TestInitShownOncePerProcess(t *testing.T) {
+	m := &Manager{st: &state{}}
+	s := &Session{partial: -1, proc: &process{}}
+	line := `{"type":"system","subtype":"init","session_id":"x","model":"claude-haiku-5-5","permissionMode":"acceptEdits","claude_code_version":"2.1.302","mcp_servers":[{"name":"docs","status":"pending"}]}`
+	m.handle(s, parse(t, line))
+	m.handle(s, parse(t, line))
+	if len(s.Messages) != 1 {
+		t.Fatalf("init lines: %+v", s.Messages)
+	}
+	want := "Session bereit · Modell claude-haiku-5-5 · Modus acceptEdits · Claude Code 2.1.302 · MCP: docs (pending)"
+	if s.Messages[0].Text != want {
+		t.Errorf("got %q", s.Messages[0].Text)
 	}
 }
 

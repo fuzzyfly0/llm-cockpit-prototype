@@ -93,6 +93,10 @@ type Model struct {
 	listStart int
 	// stickBottom forces the next render to scroll to the newest message.
 	stickBottom bool
+	// details shows tool inputs and several result lines (v toggles);
+	// expanded holds entries shown completely (enter toggles).
+	details  bool
+	expanded map[int]bool
 
 	focus     focus
 	msgCursor int
@@ -129,13 +133,15 @@ func New(mgr *core.Manager) *Model {
 	ta.Placeholder = "Notizen zu dieser Session…"
 	ta.ShowLineNumbers = false
 	a := &Model{
-		mgr:     mgr,
-		git:     map[string]platform.GitInfo{},
-		vp:      viewport.New(0, 0),
-		overlay: viewport.New(0, 0),
+		mgr:      mgr,
+		git:      map[string]platform.GitInfo{},
+		vp:       viewport.New(0, 0),
+		overlay:  viewport.New(0, 0),
 		input:    in,
 		notes:    ta,
 		fsEvents: make(chan string, 1),
+		details:  true,
+		expanded: map[int]bool{},
 	}
 	a.refresh()
 	return a
@@ -214,6 +220,7 @@ func (a *Model) refresh() {
 		id := a.sessions[a.sel].ID
 		if id != prevID {
 			a.stickBottom = true
+			a.expanded = map[int]bool{}
 			a.watch(a.sessions[a.sel].Dir)
 		}
 		a.mgr.MarkRead(id)
@@ -421,12 +428,10 @@ func (a *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		line := a.vp.YOffset + row - 2
 		for i := len(a.offsets) - 1; i >= 0; i-- {
 			if a.offsets[i] <= line {
-				// A second click on a file tool line opens the file.
+				// A second click shows the entry completely (or clips it again).
 				if a.focus == focusMessages && i == a.msgCursor {
-					if f, ok := a.cursorFile(); ok {
-						a.report(platform.OpenIDE(a.mgr.Config().IDE, a.cur.Dir, f), "In der IDE geöffnet: "+f)
-						break
-					}
+					a.toggleExpanded()
+					break
 				}
 				a.focus = focusMessages
 				a.msgCursor = i
@@ -626,8 +631,20 @@ func (a *Model) handleNav(key string) (tea.Model, tea.Cmd) {
 
 	switch key {
 	case "enter", "i":
+		if key == "enter" && a.focus == focusMessages {
+			a.toggleExpanded()
+			break
+		}
 		a.focus = focusInput
 		return a, a.input.Focus()
+	case "v":
+		a.details = !a.details
+		if a.details {
+			a.status = "Details an: Tool-Eingaben und mehrere Ergebniszeilen"
+		} else {
+			a.status = "Details aus: kompakte Ansicht"
+		}
+		a.renderMessages()
 	case "r":
 		if err := a.mgr.Start(s.ID); err != nil {
 			a.status = "Start fehlgeschlagen: " + err.Error()
@@ -729,6 +746,19 @@ func (a *Model) report(err error, ok string) {
 	}
 }
 
+// toggleExpanded shows the entry under the cursor completely or clipped.
+func (a *Model) toggleExpanded() {
+	if a.msgCursor < 0 || a.msgCursor >= len(a.cur.Messages) {
+		return
+	}
+	if a.expanded[a.msgCursor] {
+		delete(a.expanded, a.msgCursor)
+	} else {
+		a.expanded[a.msgCursor] = true
+	}
+	a.renderMessages()
+}
+
 // cursorFile is the absolute file of the tool call under the message cursor.
 func (a *Model) cursorFile() (string, bool) {
 	if a.focus != focusMessages || a.msgCursor < 0 || a.msgCursor >= len(a.cur.Messages) {
@@ -783,46 +813,28 @@ func (a *Model) renderMessages() {
 	if width <= 4 {
 		return
 	}
-	body := lipgloss.NewStyle().Width(width - 2).PaddingLeft(2)
 	// Follow new output only if the user has not scrolled up.
 	follow := a.stickBottom || a.vp.AtBottom() || a.vp.TotalLineCount() <= a.vp.Height
 	a.stickBottom = false
 	var b strings.Builder
 	a.offsets = a.offsets[:0]
 	line := 0
-	for i, m := range a.cur.Messages {
+	prevTool := ""
+	msgs := a.cur.Messages
+	for i, m := range msgs {
 		a.offsets = append(a.offsets, line)
-		marker := "  "
-		if a.focus == focusMessages && i == a.msgCursor {
-			marker = "▶ "
+		selected := a.focus == focusMessages && i == a.msgCursor
+		block := a.renderMessage(m, prevTool, selected, a.expanded[i], width)
+		if m.Kind == core.KindTool {
+			prevTool = m.Tool
 		}
-		pin := ""
-		if m.Kind == core.KindAssistant && a.cur.IsPinned(m.UUID) {
-			pin = pinStyle.Render(" ★")
-		}
-		var block string
-		switch m.Kind {
-		case core.KindUser:
-			block = marker + userStyle.Render("Du") + "\n" + body.Render(m.Text)
-		case core.KindAssistant:
-			text := m.Text
-			if m.Partial {
-				text += "▌"
-			}
-			block = marker + llmStyle.Render("Claude") + pin + "\n" + body.Render(text)
-		case core.KindTool:
-			text := "⚙ " + m.Text
-			if m.File != "" && a.focus == focusMessages && i == a.msgCursor {
-				text += "   [c] in IDE öffnen · [f] Diff in IDE"
-			}
-			block = marker + dim.Render(ansi.Truncate(text, width-2, "…"))
-		case core.KindResult:
-			block = marker + dim.Render(ansi.Truncate("  ↳ "+m.Text, width-2, "…"))
-		default:
-			block = marker + infoStyle.Render(ansi.Truncate(m.Text, width-2, "…"))
-		}
-		if a.focus == focusMessages && i == a.msgCursor {
+		if selected {
 			block = lipgloss.NewStyle().Background(lipgloss.Color("236")).Width(width).Render(block)
+		}
+		// Like Claude Code: a blank line between entries, results stick to
+		// their tool call.
+		if i+1 < len(msgs) && msgs[i+1].Kind != core.KindResult {
+			block += "\n"
 		}
 		b.WriteString(block)
 		b.WriteString("\n")
