@@ -66,7 +66,9 @@ var commands = []command{
 	{"layout", "Split view: 1 · 2 side by side · 2 stacked · 3 · 4 sessions", "ctrl+\\", "layout", false},
 	{"link", "Open the session link (config session_link + name)", "", "link", false},
 	{"github", "Open GitHub (repository or search)", "", "g", false},
-	{"terminal", "Continue the session in a terminal", "", "t", false},
+	{"terminal", "Continue the session in a Claude terminal (the cockpit follows it)", "", "t", false},
+	{"observe", "Follow a Claude terminal session started outside the cockpit", "", "observe", false},
+	{"takeover", "Continue an observed terminal session in the cockpit", "", "takeover", false},
 	{"interrupt", "Interrupt Claude", "esc / ctrl+c", "interrupt", false},
 	{"stop", "Stop the session", "", "x", false},
 	{"start", "Start / resume the session", "", "r", false},
@@ -183,6 +185,12 @@ func (a *Model) runAction(action string) (tea.Model, tea.Cmd) {
 		return a, nil
 	case action == "layout":
 		a.cycleLayout()
+		return a, nil
+	case action == "observe":
+		a.openObserve()
+		return a, nil
+	case action == "takeover":
+		a.takeOver()
 		return a, nil
 	case action == "link":
 		s, ok := a.selected()
@@ -720,6 +728,8 @@ func (a *Model) hintLine() string {
 			h = "type to search · ↑↓ select · enter switch · esc back"
 		case a.paletteOpen():
 			h = "type to filter · ↑↓ select · enter run · esc close"
+		case a.cur.Observe:
+			h = observedHint(a.cur) + " · / commands · " + a.switchHint()
 		case a.cur.Status == core.StatusWorking:
 			h = "esc / ctrl+c interrupt · / commands · ? help · tab history · " + a.switchHint() + " · ctrl+o view"
 		default:

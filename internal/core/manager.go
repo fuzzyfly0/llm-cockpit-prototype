@@ -52,6 +52,14 @@ func NewManagerAt(path string) (*Manager, error) {
 	}
 	var err error
 	m.st, err = loadState(path)
+	// Sessions running in a Claude terminal are followed again.
+	m.mu.Lock()
+	for _, s := range m.st.Sessions {
+		if s.Observe && s.ClaudeID != "" {
+			m.startObserver(s)
+		}
+	}
+	m.mu.Unlock()
 	return m, err
 }
 
@@ -163,6 +171,10 @@ func (m *Manager) Start(id string) error {
 func (m *Manager) start(s *Session) error {
 	if s.proc != nil {
 		return nil
+	}
+	if s.Observe {
+		// Running it here too would write into the same conversation twice.
+		return ErrObserved
 	}
 	m.ensureHistory(s)
 	cfg := m.st.Config
@@ -471,6 +483,7 @@ func (m *Manager) Remove(id string) {
 	for i, s := range m.st.Sessions {
 		if s.ID == id {
 			stopProc(s)
+			m.stopObserver(s)
 			m.st.Sessions = append(m.st.Sessions[:i], m.st.Sessions[i+1:]...)
 			m.save()
 			break

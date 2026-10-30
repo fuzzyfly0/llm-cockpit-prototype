@@ -127,6 +127,9 @@ type Session struct {
 	// Model and Effort are passed as --model/--effort; empty = Claude default.
 	Model  string `json:"model,omitempty"`
 	Effort string `json:"effort,omitempty"`
+	// Observe marks a session that runs in a Claude terminal; the cockpit
+	// follows its transcript (observe.go) instead of running it.
+	Observe bool `json:"observe,omitempty"`
 
 	// ActiveModel is the model reported by the running process.
 	ActiveModel string `json:"-"`
@@ -143,6 +146,7 @@ type Session struct {
 	historyLoaded bool
 	costBase      float64
 	proc          *process
+	obs           *observer
 	partial       int // index of the streaming text in Messages, -1 if none
 	partialThink  int // index of the streaming thinking block, -1 if none
 }

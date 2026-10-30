@@ -836,12 +836,22 @@ func (a *Model) handleNav(key string) (tea.Model, tea.Cmd) {
 			a.status = "the session has no Claude ID yet (send a message first)"
 			break
 		}
-		a.mgr.Stop(s.ID)
+		if s.Observe {
+			a.status = "this session already runs in a Claude terminal"
+			break
+		}
+		// Stop the cockpit's process first, then follow the terminal session.
+		if err := a.mgr.Observe(s.ID); err != nil {
+			a.status = err.Error()
+			break
+		}
 		if err := platform.OpenTerminal(s.Dir, a.mgr.Config().ClaudeBin, "--resume", s.ClaudeID); err != nil {
+			a.mgr.TakeOver(s.ID)
 			a.status = "Terminal: " + err.Error()
 		} else {
-			a.status = "session opened in a terminal and stopped here"
+			a.status = "session continues in a Claude terminal; the cockpit follows it (⧉) – /takeover brings it back"
 		}
+		a.refresh()
 	case "Y":
 		a.status = a.copyNotes(s.Notes)
 	case "o":
@@ -1171,6 +1181,8 @@ func (a *Model) renderSessions(h int) string {
 			}
 			if p := a.paneOf(s.ID); p != "" {
 				mark = lipgloss.NewStyle().Foreground(accent).Render(p) // shown in pane p
+			} else if s.Observe {
+				mark = dim.Render(observeLabel) // runs in a Claude terminal
 			}
 			title := ansi.Truncate(fmt.Sprintf("  %s %s %s", statusStyle(s.Status).Render(statusIcon(s.Status)), mark, s.Name)+branch, leftW, "…")
 			sub := s.Preview()
@@ -1229,6 +1241,9 @@ func (a *Model) renderHeader(s core.Session, w int) string {
 	}
 
 	info := []string{modelText(s)}
+	if s.Observe {
+		info = []string{observeLabel + " Claude terminal", modelText(s)}
+	}
 	if s.Effort != "" {
 		info = append(info, "effort "+s.Effort)
 	}
@@ -1343,8 +1358,15 @@ Files (alt+2)
 Notes (alt+3): just type, esc saves, ctrl+y copies everything
 Pins (alt+4):  enter jumps to the entry, del removes the pin
 
+Real Claude terminals (marked ⧉)
+  /terminal        continue the session in a Claude terminal; the cockpit
+                   follows it live (history, status, context)
+  /observe         follow a Claude session started outside the cockpit
+  /takeover        continue a followed session in the cockpit again
+                   (close its Claude terminal first)
+
 Everything else via / or ctrl+p: model, effort, diff, pull, IDE, file
-manager, GitHub, session link, terminal, stop/start, copy notes, quit.
+manager, GitHub, session link, stop/start, settings, copy notes, quit.
 
 Mouse
   click on session / tab / entry   select
