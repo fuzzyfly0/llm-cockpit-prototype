@@ -110,9 +110,9 @@ func TestDiffArgs(t *testing.T) {
 
 func TestReadPreview(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "f.txt")
-	_ = os.WriteFile(p, []byte("eins\n\tzwei"), 0o644)
+	_ = os.WriteFile(p, []byte("one\n\ttwo"), 0o644)
 	out, err := ReadPreview(p)
-	if err != nil || out != "    1  eins\n    2      zwei\n" {
+	if err != nil || out != "    1  one\n    2      two\n" {
 		t.Fatalf("got %q, %v", out, err)
 	}
 	_ = os.WriteFile(p, []byte{0, 1, 2}, 0o644)

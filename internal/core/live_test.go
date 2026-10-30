@@ -20,7 +20,7 @@ func TestLiveThinking(t *testing.T) {
 	defer m.StopAll()
 	m.SetModel(id, "claude-haiku-5-5")
 	m.SetEffort(id, "high")
-	if err := m.Send(id, "Denk gruendlich nach: Ein Zug faehrt um 9:40 los, 2 h 35 min Fahrt plus 3 Halte zu je 4 min. Wann kommt er an? Ein Satz."); err != nil {
+	if err := m.Send(id, "Think carefully: a train leaves at 9:40 and travels 2 h 35 min plus 3 stops of 4 min each. When does it arrive? One sentence."); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(120 * time.Second)
@@ -61,7 +61,7 @@ func TestLiveSession(t *testing.T) {
 	if msg := m.SetEffort(id, "low"); msg != "session restarted with the new setting" {
 		t.Fatalf("SetEffort: %s", msg)
 	}
-	if err := m.Send(id, "Antworte nur mit dem Wort: Pong"); err != nil {
+	if err := m.Send(id, "Reply with the single word: Pong"); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(90 * time.Second)

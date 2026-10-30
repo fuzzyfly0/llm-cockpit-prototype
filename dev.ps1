@@ -1,5 +1,5 @@
-# Startet das Cockpit immer mit dem neuesten Code.
-# Im Cockpit mit q beenden, dann Enter = neu bauen und starten, x = Ende.
+# Always runs the cockpit with the latest code.
+# Quit the cockpit (ctrl+c twice), then Enter = rebuild and start, x = stop.
 $env:Path = "C:\Program Files\Go\bin;$env:Path"
 Set-Location $PSScriptRoot
 $exe = Join-Path $env:TEMP "llm-cockpit-dev.exe"
@@ -8,8 +8,8 @@ while ($true) {
     if ($LASTEXITCODE -eq 0) {
         & $exe
     } else {
-        Write-Host "Build fehlgeschlagen." -ForegroundColor Red
+        Write-Host "Build failed." -ForegroundColor Red
     }
-    $answer = Read-Host "Enter = neu bauen und starten, x = Ende"
+    $answer = Read-Host "Enter = rebuild and start, x = stop"
     if ($answer -eq "x") { break }
 }

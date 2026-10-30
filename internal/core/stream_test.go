@@ -189,16 +189,16 @@ func TestStreamingReplacesPartialText(t *testing.T) {
 	for _, line := range []string{
 		`{"type":"system","subtype":"thinking_tokens","estimated_tokens":50}`,
 		`{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"text","text":""}}}`,
-		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Im "}}}`,
-		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Ordner"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"In the "}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"folder"}}}`,
 	} {
 		m.handle(s, parse(t, line))
 	}
-	if len(s.Messages) != 1 || s.Messages[0].Text != "Im Ordner" || !s.Messages[0].Partial {
+	if len(s.Messages) != 1 || s.Messages[0].Text != "In the folder" || !s.Messages[0].Partial {
 		t.Fatalf("while streaming: %+v", s.Messages)
 	}
-	m.handle(s, parse(t, `{"type":"assistant","uuid":"u9","message":{"content":[{"type":"text","text":"Im Ordner liegen 12 Dateien."}]}}`))
-	want := Message{UUID: "u9", Kind: KindAssistant, Text: "Im Ordner liegen 12 Dateien."}
+	m.handle(s, parse(t, `{"type":"assistant","uuid":"u9","message":{"content":[{"type":"text","text":"In the folder are 12 files."}]}}`))
+	want := Message{UUID: "u9", Kind: KindAssistant, Text: "In the folder are 12 files."}
 	if len(s.Messages) != 1 || s.Messages[0] != want {
 		t.Fatalf("after final block: %+v", s.Messages)
 	}

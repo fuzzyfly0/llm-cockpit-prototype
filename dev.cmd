@@ -1,3 +1,3 @@
 @echo off
-rem Startet dev.ps1 ohne die PowerShell-Ausfuehrungsrichtlinie zu aendern.
+rem Runs dev.ps1 without changing the PowerShell execution policy.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0dev.ps1"

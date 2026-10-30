@@ -13,7 +13,7 @@ func TestBranchName(t *testing.T) {
 		"feature/export":         "feature/export",
 		"  login fix!! ":         "login-fix",
 		"a..b.lock":              "a.b",
-		"Größe ändern":           "Gr-e-ndern",
+		"Café crème":             "Caf-cr-me",
 	}
 	for in, want := range tests {
 		if got := BranchName(in); got != want {

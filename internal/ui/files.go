@@ -153,7 +153,7 @@ func (a *Model) openFiles() tea.Cmd {
 }
 
 // sessionChanged runs after every switch to another session: it refreshes
-// the git info and, if the Dateien tab is open, loads the new session's
+// the git info and, if the Files tab is open, loads the new session's
 // files – without moving the keyboard focus.
 func (a *Model) sessionChanged() tea.Cmd {
 	cmds := []tea.Cmd{a.gitCmd()}
